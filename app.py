@@ -1,160 +1,149 @@
 from flask import Flask, request, jsonify
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from webdriver_manager.chrome import ChromeDriverManager
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-import time
+import requests
+import re
 import json
 import os
-import re
 import logging
+import time
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-class POMScraperSelenium:
+class POMScraper:
     def __init__(self):
-        self.driver = None
-        self.csrf_token = None
-        self.is_ready = False
         self.link_1 = "https://pom.bpjsketenagakerjaan.go.id/pu/login?t=YTliOWM0OGNjMGExYWVlOTUyZGU2YTg5MjExNDk0YmFkYWZhOTQ0MzJkODZmZGUwYTY5OTNjMTUwMDI4MzIjMQ=="
         self.base_url = "https://pom.bpjsketenagakerjaan.go.id"
+        self.session = requests.Session()
+        self.csrf_token = None
+        self.is_ready = False
         
-    def start_browser(self):
-        """Start Chrome browser"""
-        chrome_options = Options()
-        chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-        chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        chrome_options.add_experimental_option('useAutomationExtension', False)
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        
-        # Untuk Termux, perlu mode headless
-        chrome_options.add_argument("--headless")
-        
-        service = Service(ChromeDriverManager().install())
-        self.driver = webdriver.Chrome(service=service, options=chrome_options)
-        self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-        
-        logger.info("Browser started")
-        
+        # Headers seperti browser real
+        self.headers = {
+            'User-Agent': 'Mozilla/5.0 (Linux; Android 14; SM-S911B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.144 Mobile Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Cache-Control': 'max-age=0',
+        }
+
     def full_login(self) -> dict:
-        """Login otomatis menggunakan browser"""
+        logger.info("Memulai proses login...")
+        
         try:
-            if not self.driver:
-                self.start_browser()
+            # Step 1: Buka LINK_1
+            logger.info(f"Membuka LINK_1")
+            response = self.session.get(self.link_1, headers=self.headers, timeout=30, allow_redirects=True)
             
-            logger.info(f"Membuka: {self.link_1}")
-            self.driver.get(self.link_1)
-            time.sleep(3)
+            logger.info(f"Status: {response.status_code}")
+            logger.info(f"Final URL: {response.url}")
             
-            logger.info(f"Current URL: {self.driver.current_url}")
+            if response.status_code != 200:
+                return {"status": "ERROR", "message": f"HTTP {response.status_code}"}
             
-            # Tunggu hingga halaman selesai load
-            WebDriverWait(self.driver, 30).until(
-                EC.presence_of_element_located((By.TAG_NAME, "body"))
-            )
-            
-            # Extract CSRF token dari HTML
-            html = self.driver.page_source
+            # Extract CSRF token
             csrf_pattern = r'name=["\']_csrf["\'][^>]*value=["\']([^"\']+)["\']'
-            match = re.search(csrf_pattern, html)
+            match = re.search(csrf_pattern, response.text)
             
             if match:
                 self.csrf_token = match.group(1)
+                self.headers['Cookie'] = f'_csrf={self.csrf_token}'
                 logger.info(f"CSRF Token: {self.csrf_token[:30]}...")
-            
-            # Akses step3
-            logger.info("Mengakses step3...")
-            self.driver.get(f'{self.base_url}/pu/step3')
-            time.sleep(2)
-            
-            # Extract CSRF lagi jika perlu
-            if not self.csrf_token:
-                html2 = self.driver.page_source
-                match2 = re.search(csrf_pattern, html2)
+            else:
+                # Coba pattern lain
+                csrf_pattern2 = r'_csrf["\']?\s*:\s*["\']([^"\']+)["\']'
+                match2 = re.search(csrf_pattern2, response.text)
                 if match2:
                     self.csrf_token = match2.group(1)
-                    logger.info(f"CSRF Token from step3: {self.csrf_token[:30]}...")
+                    self.headers['Cookie'] = f'_csrf={self.csrf_token}'
+                    logger.info(f"CSRF Token (js): {self.csrf_token[:30]}...")
             
-            self.is_ready = True
-            return {"status": "SUCCESS", "message": "Login berhasil!"}
+            # Step 2: Akses step3
+            logger.info("Mengakses step3...")
+            time.sleep(1)
+            response2 = self.session.get(f'{self.base_url}/pu/step3', headers=self.headers, timeout=30)
             
+            logger.info(f"Step3 Status: {response2.status_code}")
+            
+            if response2.status_code == 200:
+                if not self.csrf_token:
+                    match3 = re.search(csrf_pattern, response2.text)
+                    if match3:
+                        self.csrf_token = match3.group(1)
+                        self.headers['Cookie'] = f'_csrf={self.csrf_token}'
+                        logger.info(f"CSRF Token from step3: {self.csrf_token[:30]}...")
+                
+                self.is_ready = True
+                return {"status": "SUCCESS", "message": "Login berhasil!", "csrf": self.csrf_token is not None}
+            else:
+                return {"status": "ERROR", "message": f"Step3 HTTP {response2.status_code}"}
+                
+        except requests.exceptions.ConnectionError as e:
+            logger.error(f"Connection error: {e}")
+            return {"status": "ERROR", "message": "Gagal konek ke server. Cek internet."}
         except Exception as e:
             logger.error(f"Error: {e}")
             return {"status": "ERROR", "message": str(e)}
-    
+
     def check_kpj(self, kpj: str) -> dict:
-        """Cek KPJ menggunakan browser"""
         if not self.is_ready:
             login = self.full_login()
             if login['status'] != 'SUCCESS':
                 return login
         
         try:
-            # Submit form
             url = f'{self.base_url}/pu/prosesHapusTkAll'
-            
-            # Buat payload
-            payload = f'kpj={kpj}'
+            payload = {'kpj': kpj}
             if self.csrf_token:
-                payload += f'&_csrf={self.csrf_token}'
+                payload['_csrf'] = self.csrf_token
             
-            # Execute JavaScript untuk POST request
-            js_code = f'''
-            fetch("{url}", {{
-                method: "POST",
-                headers: {{
-                    "Content-Type": "application/x-www-form-urlencoded",
-                    "X-Requested-With": "XMLHttpRequest"
-                }},
-                body: "{payload}"
-            }})
-            .then(response => response.json())
-            .then(data => {{
-                window.__result = data;
-            }})
-            .catch(error => {{
-                window.__error = error.message;
-            }});
-            '''
+            headers = {
+                **self.headers,
+                'X-Requested-With': 'XMLHttpRequest',
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'Referer': f'{self.base_url}/pu/step3',
+                'Origin': self.base_url,
+            }
             
-            self.driver.execute_script(js_code)
-            time.sleep(2)
+            logger.info(f"POST ke: {url}")
+            response = self.session.post(url, data=payload, headers=headers, timeout=30)
             
-            # Ambil hasil
-            result = self.driver.execute_script("return window.__result;")
-            error = self.driver.execute_script("return window.__error;")
+            logger.info(f"Check Status: {response.status_code}")
+            logger.info(f"Response: {response.text[:200]}")
             
-            if error:
-                return {"status": "ERROR", "message": error}
-            
-            if result:
-                if result.get('ret') == '0':
-                    return {"status": "SUCCESS", "data": result}
-                else:
-                    return {"status": "ERROR", "message": result.get('msg', 'KPJ tidak valid')}
+            if response.status_code == 200:
+                # Coba parse JSON
+                try:
+                    data = response.json()
+                    if data.get('ret') == '0':
+                        return {"status": "SUCCESS", "data": data}
+                    else:
+                        return {"status": "ERROR", "message": data.get('msg', 'KPJ tidak valid')}
+                except:
+                    # Jika bukan JSON, cek teks
+                    if 'success' in response.text.lower() or 'berhasil' in response.text.lower():
+                        return {"status": "SUCCESS", "data": response.text[:500]}
+                    return {"status": "ERROR", "message": f"Response: {response.text[:100]}"}
             else:
-                return {"status": "ERROR", "message": "Tidak ada response"}
+                return {"status": "ERROR", "message": f"HTTP {response.status_code}"}
                 
         except Exception as e:
             logger.error(f"Error: {e}")
             return {"status": "ERROR", "message": str(e)}
-    
-    def close(self):
-        if self.driver:
-            self.driver.quit()
 
 
-scraper = POMScraperSelenium()
+scraper = POMScraper()
 
 
-# HTML
+# HTML (sama seperti sebelumnya)
 HTML = '''
 <!DOCTYPE html>
 <html>
@@ -286,7 +275,7 @@ HTML = '''
             const statusDiv = document.getElementById('status');
             
             btn.disabled = true;
-            statusDiv.innerHTML = '⏳ Login... (buka browser)';
+            statusDiv.innerHTML = '⏳ Login...';
             statusDiv.className = 'status status-yellow';
             addLog('Mulai login...');
             
@@ -302,7 +291,7 @@ HTML = '''
                     document.getElementById('checkBtn').disabled = false;
                     addLog('✅ Login sukses!');
                 } else {
-                    statusDiv.innerHTML = '❌ Login Gagal: ' + data.message;
+                    statusDiv.innerHTML = '⚠️ Login Gagal: ' + data.message;
                     statusDiv.className = 'status status-red';
                     addLog('❌ Login gagal: ' + data.message);
                 }
@@ -366,10 +355,10 @@ HTML = '''
                             if (key === 'nomorIdentitas') label = 'NIK';
                             if (key === 'namaLengkap') label = 'Nama';
                             if (key === 'nomUpah') label = 'Gaji';
-                            html += `<tr><td>${label}</td><td>${escapeHtml(String(d[key]))}</td></tr>`;
+                            html += `<tr><td style="font-weight: bold">${label}</td><td>${escapeHtml(String(d[key]))}</td></tr>`;
                         }
                     }
-                    html += '</table>';
+                    html += '赶</div>';
                 }
                 contentDiv.innerHTML = html;
             } else {
@@ -416,16 +405,10 @@ def check():
     return jsonify(result)
 
 
-@app.route('/close', methods=['POST'])
-def close():
-    scraper.close()
-    return jsonify({"status": "SUCCESS"})
-
-
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     print("="*50)
-    print("POM BPJS Scraper with Selenium")
+    print("POM BPJS Scraper Started!")
     print(f"Buka: http://localhost:{port}")
     print("="*50)
     app.run(debug=False, host='0.0.0.0', port=port)
