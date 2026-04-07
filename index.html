@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>POM BPJS Scraper - Cek KPJ</title>
+    <title>Token Connector - Pine Email View</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -13,7 +13,7 @@
             padding: 20px;
         }
         .container {
-            max-width: 800px;
+            max-width: 900px;
             margin: 0 auto;
             background: white;
             border-radius: 20px;
@@ -40,10 +40,7 @@
             text-align: center;
             letter-spacing: 2px;
         }
-        input:focus {
-            outline: none;
-            border-color: #667eea;
-        }
+        input:focus { outline: none; border-color: #667eea; }
         button {
             width: 100%;
             padding: 15px;
@@ -54,9 +51,13 @@
             border: none;
             border-radius: 10px;
             cursor: pointer;
+            margin-bottom: 15px;
         }
         button:hover { transform: translateY(-2px); }
         button:disabled { opacity: 0.6; cursor: not-allowed; }
+        .btn-secondary {
+            background: linear-gradient(135deg, #6c757d, #495057);
+        }
         .result {
             margin-top: 30px;
             padding: 20px;
@@ -82,6 +83,8 @@
             border-radius: 8px;
             overflow-x: auto;
             font-size: 12px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
         }
         .status-badge {
             display: inline-block;
@@ -94,6 +97,7 @@
         .status-success { background: #d4edda; color: #155724; }
         .status-error { background: #f8d7da; color: #721c24; }
         .status-warning { background: #fff3cd; color: #856404; }
+        .status-info { background: #d1ecf1; color: #0c5460; }
         .info-token {
             background: #e7f3ff;
             padding: 10px;
@@ -129,25 +133,12 @@
             border-radius: 8px;
             margin-bottom: 15px;
         }
-        .warning-message {
-            background: #fff3cd;
-            color: #856404;
+        .success-message {
+            background: #d4edda;
+            color: #155724;
             padding: 12px;
             border-radius: 8px;
             margin-bottom: 15px;
-        }
-        .data-table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-        .data-table td {
-            padding: 10px;
-            border-bottom: 1px solid #e0e0e0;
-        }
-        .data-table td:first-child {
-            font-weight: bold;
-            width: 35%;
-            background: #f0f0f0;
         }
         .connection-status {
             font-size: 12px;
@@ -163,45 +154,118 @@
 <body>
     <div class="container">
         <div class="header">
-            <h1>🏦 POM BPJS Scraper</h1>
-            <p>Cek Data Peserta BPJS Ketenagakerjaan via POM</p>
+            <h1>🔗 Token Connector</h1>
+            <p>Hubungkan token ke server asalnya (pine.email-view.com)</p>
         </div>
         
         <div class="content">
-            <div id="connectionStatus" class="connection-status {{ 'connected' if connection_status else 'disconnected' }}">
-                {% if connection_status %}
-                ✅ Terhubung ke POM
-                {% else %}
-                ❌ Tidak terhubung ke POM. Token mungkin expired.
-                {% endif %}
+            <div id="connectionStatus" class="connection-status disconnected">
+                ❌ Belum terhubung
             </div>
+            
+            <button id="connectBtn" class="btn-secondary" onclick="connectToServer()">🔌 KONEK KE SERVER</button>
             
             <div class="form-group">
                 <label>📝 Nomor KPJ (11 digit)</label>
-                <input type="text" id="kpj" maxlength="11" placeholder="Contoh: 22119520694" autocomplete="off" value="22119520694">
+                <input type="text" id="kpj" maxlength="11" placeholder="Contoh: 22119520694" autocomplete="off">
             </div>
             
-            <button id="checkBtn" onclick="checkKPJ()">🔍 CHECK</button>
+            <button id="checkBtn" onclick="checkKPJ()" disabled>🔍 CHECK KPJ</button>
             
             <div class="loading" id="loading">
                 <div class="spinner"></div>
-                <p style="margin-top: 10px;">Memproses data...</p>
+                <p style="margin-top: 10px;">Memproses...</p>
             </div>
             
             <div class="result" id="result">
-                <h3>📊 Hasil Pengecekan</h3>
+                <h3>📊 Hasil</h3>
                 <div id="resultContent"></div>
             </div>
             
             <div class="info-token">
-                <strong>🔑 Token terhubung:</strong><br>
+                <strong>🔑 Token URL:</strong><br>
                 {{ token_preview }}
+                <details style="margin-top: 10px;">
+                    <summary>Lihat token lengkap</summary>
+                    <code style="font-size: 10px; word-break: break-all;">{{ full_token }}</code>
+                </details>
             </div>
         </div>
     </div>
 
     <script>
+        let isConnected = {{ 'true' if connection_status else 'false' }};
+        
+        function updateUI() {
+            const statusDiv = document.getElementById('connectionStatus');
+            const checkBtn = document.getElementById('checkBtn');
+            
+            if (isConnected) {
+                statusDiv.className = 'connection-status connected';
+                statusDiv.innerHTML = '✅ Terhubung ke server';
+                checkBtn.disabled = false;
+            } else {
+                statusDiv.className = 'connection-status disconnected';
+                statusDiv.innerHTML = '❌ Belum terhubung. Klik "KONEK KE SERVER"';
+                checkBtn.disabled = true;
+            }
+        }
+        
+        async function connectToServer() {
+            const connectBtn = document.getElementById('connectBtn');
+            const loading = document.getElementById('loading');
+            const resultDiv = document.getElementById('result');
+            const resultContent = document.getElementById('resultContent');
+            
+            connectBtn.disabled = true;
+            loading.classList.add('show');
+            resultDiv.classList.remove('show');
+            
+            try {
+                const response = await fetch('/connect', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                
+                const data = await response.json();
+                
+                if (data.status === 'success') {
+                    isConnected = true;
+                    updateUI();
+                    
+                    resultContent.innerHTML = `
+                        <span class="status-badge status-success">✅ CONNECTED</span>
+                        <div class="success-message">${escapeHtml(data.message)}</div>
+                        ${data.html_preview ? `<pre>${escapeHtml(data.html_preview)}</pre>` : ''}
+                        ${data.data ? `<pre>${escapeHtml(JSON.stringify(data.data, null, 2))}</pre>` : ''}
+                    `;
+                    resultDiv.classList.add('show');
+                } else {
+                    resultContent.innerHTML = `
+                        <span class="status-badge status-error">❌ GAGAL</span>
+                        <div class="error-message">${escapeHtml(data.message)}</div>
+                    `;
+                    resultDiv.classList.add('show');
+                }
+                
+            } catch (error) {
+                resultContent.innerHTML = `
+                    <span class="status-badge status-error">❌ ERROR</span>
+                    <div class="error-message">Network error: ${escapeHtml(error.message)}</div>
+                `;
+                resultDiv.classList.add('show');
+            } finally {
+                connectBtn.disabled = false;
+                loading.classList.remove('show');
+            }
+        }
+        
         async function checkKPJ() {
+            if (!isConnected) {
+                alert('Konek ke server dulu!');
+                return;
+            }
+            
             const kpj = document.getElementById('kpj').value.trim();
             const checkBtn = document.getElementById('checkBtn');
             const loading = document.getElementById('loading');
@@ -209,12 +273,12 @@
             const resultContent = document.getElementById('resultContent');
             
             if (!kpj) {
-                showError('Masukkan nomor KPJ!');
+                alert('Masukkan nomor KPJ!');
                 return;
             }
             
             if (!/^\d{11}$/.test(kpj)) {
-                showError('KPJ harus 11 digit angka!');
+                alert('KPJ harus 11 digit angka!');
                 return;
             }
             
@@ -231,72 +295,22 @@
                 
                 const data = await response.json();
                 
-                if (data.status === 'SUCCESS') {
-                    displaySuccess(data.data);
-                } else if (data.status === 'HTML_RESPONSE') {
-                    displayHTML(data.data);
-                } else {
-                    displayError(data.message || data.response || 'Terjadi kesalahan');
-                }
+                resultContent.innerHTML = `
+                    <span class="status-badge status-info">ℹ️ INFO</span>
+                    <pre>${escapeHtml(JSON.stringify(data, null, 2))}</pre>
+                `;
+                resultDiv.classList.add('show');
                 
             } catch (error) {
-                console.error('Fetch error:', error);
-                displayError('Network error: ' + error.message);
+                resultContent.innerHTML = `
+                    <span class="status-badge status-error">❌ ERROR</span>
+                    <div class="error-message">Network error: ${escapeHtml(error.message)}</div>
+                `;
+                resultDiv.classList.add('show');
             } finally {
                 checkBtn.disabled = false;
                 loading.classList.remove('show');
-                resultDiv.classList.add('show');
             }
-        }
-        
-        function showError(message) {
-            const resultContent = document.getElementById('resultContent');
-            const resultDiv = document.getElementById('result');
-            resultContent.innerHTML = `<div class="error-message">⚠️ ${escapeHtml(message)}</div>`;
-            resultDiv.classList.add('show');
-        }
-        
-        function displaySuccess(data) {
-            const resultContent = document.getElementById('resultContent');
-            
-            let html = '<span class="status-badge status-success">✅ SUKSES</span>';
-            
-            if (data && typeof data === 'object') {
-                if (data.data && typeof data.data === 'object') {
-                    html += '<table class="data-table">';
-                    for (const [key, value] of Object.entries(data.data)) {
-                        let displayValue = value;
-                        if (typeof value === 'object') {
-                            displayValue = JSON.stringify(value);
-                        }
-                        html += `<tr><td>${escapeHtml(key)}</td><td>${escapeHtml(String(displayValue))}</td></tr>`;
-                    }
-                    html += '</table>';
-                } else {
-                    html += `<pre>${escapeHtml(JSON.stringify(data, null, 2))}</pre>`;
-                }
-            } else {
-                html += `<pre>${escapeHtml(String(data))}</pre>`;
-            }
-            
-            resultContent.innerHTML = html;
-        }
-        
-        function displayHTML(html) {
-            const resultContent = document.getElementById('resultContent');
-            resultContent.innerHTML = `
-                <span class="status-badge status-warning">📄 HTML RESPONSE</span>
-                <div class="warning-message">Server mengembalikan HTML, bukan JSON. Mungkin perlu login ulang.</div>
-                <pre>${escapeHtml(html)}</pre>
-            `;
-        }
-        
-        function displayError(message) {
-            const resultContent = document.getElementById('resultContent');
-            resultContent.innerHTML = `
-                <span class="status-badge status-error">❌ ERROR</span>
-                <div class="error-message">${escapeHtml(message)}</div>
-            `;
         }
         
         function escapeHtml(text) {
@@ -305,254 +319,13 @@
             return div.innerHTML;
         }
         
+        // Initialize UI
+        updateUI();
+        
+        // Enter key support
         document.getElementById('kpj').addEventListener('keypress', function(e) {
-            if (e.key === 'Enter') checkKPJ();
+            if (e.key === 'Enter' && isConnected) checkKPJ();
         });
     </script>
 </body>
     </html>
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(10px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-
-        .result h3 {
-            margin-bottom: 15px;
-            color: #333;
-            border-bottom: 2px solid #667eea;
-            padding-bottom: 10px;
-        }
-
-        .result pre {
-            background: #2d2d2d;
-            color: #f8f8f2;
-            padding: 15px;
-            border-radius: 8px;
-            overflow-x: auto;
-            font-size: 12px;
-            font-family: 'Courier New', monospace;
-        }
-
-        .status-badge {
-            display: inline-block;
-            padding: 5px 12px;
-            border-radius: 20px;
-            font-size: 12px;
-            font-weight: bold;
-            margin-bottom: 15px;
-        }
-
-        .status-success {
-            background: #d4edda;
-            color: #155724;
-        }
-
-        .status-error {
-            background: #f8d7da;
-            color: #721c24;
-        }
-
-        .info-token {
-            background: #e7f3ff;
-            padding: 10px;
-            border-radius: 8px;
-            font-size: 11px;
-            color: #0066cc;
-            margin-top: 20px;
-            word-break: break-all;
-        }
-
-        .loading {
-            display: none;
-            text-align: center;
-            margin-top: 20px;
-        }
-
-        .loading.show {
-            display: block;
-        }
-
-        .spinner {
-            width: 40px;
-            height: 40px;
-            border: 4px solid #f3f3f3;
-            border-top: 4px solid #667eea;
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-            margin: 0 auto;
-        }
-
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-
-        .error-message {
-            background: #f8d7da;
-            color: #721c24;
-            padding: 12px;
-            border-radius: 8px;
-            margin-bottom: 15px;
-        }
-
-        .data-table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-
-        .data-table td {
-            padding: 10px;
-            border-bottom: 1px solid #e0e0e0;
-        }
-
-        .data-table td:first-child {
-            font-weight: bold;
-            width: 35%;
-            background: #f0f0f0;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>🏦 POM BPJS Scraper</h1>
-            <p>Cek Data Peserta BPJS Ketenagakerjaan via POM</p>
-        </div>
-        
-        <div class="content">
-            <div class="form-group">
-                <label>📝 Nomor KPJ (11 digit)</label>
-                <input type="text" id="kpj" maxlength="11" placeholder="Contoh: 12345678901" autocomplete="off">
-            </div>
-            
-            <button id="checkBtn" onclick="checkKPJ()">🔍 CHECK</button>
-            
-            <div class="loading" id="loading">
-                <div class="spinner"></div>
-                <p style="margin-top: 10px;">Memproses data...</p>
-            </div>
-            
-            <div class="result" id="result">
-                <h3>📊 Hasil Pengecekan</h3>
-                <div id="resultContent"></div>
-            </div>
-            
-            <div class="info-token">
-                <strong>🔑 Token terhubung:</strong><br>
-                {{ token_preview }}
-            </div>
-        </div>
-    </div>
-
-    <script>
-        async function checkKPJ() {
-            const kpj = document.getElementById('kpj').value.trim();
-            const checkBtn = document.getElementById('checkBtn');
-            const loading = document.getElementById('loading');
-            const resultDiv = document.getElementById('result');
-            const resultContent = document.getElementById('resultContent');
-            
-            // Validasi
-            if (!kpj) {
-                showError('Masukkan nomor KPJ!');
-                return;
-            }
-            
-            if (!/^\d{11}$/.test(kpj)) {
-                showError('KPJ harus 11 digit angka!');
-                return;
-            }
-            
-            // Show loading
-            checkBtn.disabled = true;
-            loading.classList.add('show');
-            resultDiv.classList.remove('show');
-            
-            try {
-                const response = await fetch('/check', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ kpj: kpj })
-                });
-                
-                const data = await response.json();
-                
-                if (data.status === 'SUCCESS') {
-                    displaySuccess(data.data);
-                } else if (data.status === 'HTML') {
-                    displayHTML(data.data);
-                } else {
-                    displayError(data.message || data.response || 'Terjadi kesalahan');
-                }
-                
-            } catch (error) {
-                displayError('Network error: ' + error.message);
-            } finally {
-                checkBtn.disabled = false;
-                loading.classList.remove('show');
-                resultDiv.classList.add('show');
-            }
-        }
-        
-        function showError(message) {
-            const resultContent = document.getElementById('resultContent');
-            const resultDiv = document.getElementById('result');
-            resultContent.innerHTML = `<div class="error-message">⚠️ ${message}</div>`;
-            resultDiv.classList.add('show');
-        }
-        
-        function displaySuccess(data) {
-            const resultContent = document.getElementById('resultContent');
-            
-            let html = '<span class="status-badge status-success">✅ SUKSES</span>';
-            
-            if (data.data && typeof data.data === 'object') {
-                html += '<table class="data-table">';
-                for (const [key, value] of Object.entries(data.data)) {
-                    let displayValue = value;
-                    if (typeof value === 'object') {
-                        displayValue = JSON.stringify(value);
-                    }
-                    html += `<tr><td>${key}</td><td>${escapeHtml(String(displayValue))}</td></tr>`;
-                }
-                html += '</table>';
-            } else {
-                html += `<pre>${escapeHtml(JSON.stringify(data, null, 2))}</pre>`;
-            }
-            
-            resultContent.innerHTML = html;
-        }
-        
-        function displayHTML(html) {
-            const resultContent = document.getElementById('resultContent');
-            resultContent.innerHTML = `
-                <span class="status-badge status-success">📄 HTML RESPONSE</span>
-                <pre>${escapeHtml(html)}</pre>
-            `;
-        }
-        
-        function displayError(message) {
-            const resultContent = document.getElementById('resultContent');
-            resultContent.innerHTML = `
-                <span class="status-badge status-error">❌ ERROR</span>
-                <div class="error-message">${escapeHtml(message)}</div>
-            `;
-        }
-        
-        function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
-        }
-        
-        // Enter key support
-        document.getElementById('kpj').addEventListener('keypress', function(e) {
-            if (e.key === 'Enter') {
-                checkKPJ();
-            }
-        });
-    </script>
-</body>
-</html>
