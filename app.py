@@ -1,209 +1,83 @@
 from flask import Flask, request, jsonify, render_template_string
 import requests
-import re
-import json
-import os
 import logging
-import time
+import os
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-class POMScraper:
+class POMBot:
     def __init__(self):
-        # URL TOKEN - TIDAK DIUBAH
         self.token_url = "https://pom.bpjsketenagakerjaan.go.id/pu/login?t=YTliOWM0OGNjMGExYWVlOTUyZGU2YTg5MjExNDk0YmFkYWZhOTQ0MzJkODZmZGUwYTY5OTNjMTUwMDI4MzIjMQ=="
-        self.base_url = "https://pom.bpjsketenagakerjaan.go.id"
-        self.step3_url = f"{self.base_url}/pu/step3"
-        self.check_url = f"{self.base_url}/pu/prosesHapusTkAll"
-        
+        self.step3_url = "https://pom.bpjsketenagakerjaan.go.id/pu/step3"
         self.session = requests.Session()
-        self.csrf_token = None
-        self.is_logged_in = False
+        self.token_opened = False
+        self.step3_opened = False
         
-        # Headers seperti browser
         self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'DNT': '1',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'none',
-            'Sec-Fetch-User': '?1',
-            'Cache-Control': 'max-age=0',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'id-ID,id;q=0.9,en;q=0.8',
         }
 
-    def login(self) -> dict:
-        """Step 1: Buka token URL untuk login"""
+    def buka_token(self) -> dict:
+        """Tugas 1: Buka token URL"""
         logger.info("="*50)
-        logger.info("STEP 1: Membuka token URL...")
+        logger.info("TUGAS 1: Membuka token URL...")
         logger.info(f"URL: {self.token_url}")
         
         try:
-            # Buka token URL
             response = self.session.get(self.token_url, headers=self.headers, timeout=30, allow_redirects=True)
             
-            logger.info(f"Response Status: {response.status_code}")
-            logger.info(f"Final URL setelah redirect: {response.url}")
+            logger.info(f"Status: {response.status_code}")
+            logger.info(f"Final URL: {response.url}")
             
-            if response.status_code != 200:
-                return {"status": "ERROR", "message": f"Token URL gagal dibuka (HTTP {response.status_code})"}
-            
-            # Extract CSRF token dari response
-            csrf_pattern = r'name=["\']_csrf["\'][^>]*value=["\']([^"\']+)["\']'
-            match = re.search(csrf_pattern, response.text)
-            
-            if match:
-                self.csrf_token = match.group(1)
-                self.headers['Cookie'] = f'_csrf={self.csrf_token}'
-                logger.info(f"✅ CSRF Token ditemukan: {self.csrf_token[:30]}...")
+            if response.status_code == 200:
+                self.token_opened = True
+                return {"status": "SUCCESS", "message": "Token berhasil dibuka!", "final_url": response.url}
             else:
-                logger.warning("⚠️ CSRF Token tidak ditemukan di response")
-            
-            self.is_logged_in = True
-            return {"status": "SUCCESS", "message": "Token berhasil dibuka!", "csrf": self.csrf_token is not None}
-            
+                return {"status": "ERROR", "message": f"Token gagal dibuka (HTTP {response.status_code})", "final_url": response.url}
+                
         except Exception as e:
             logger.error(f"Error: {e}")
             return {"status": "ERROR", "message": str(e)}
 
-    def access_step3(self) -> dict:
-        """Step 2: Akses halaman step3 setelah login"""
+    def buka_step3(self) -> dict:
+        """Tugas 2: Buka step3"""
         logger.info("="*50)
-        logger.info("STEP 2: Mengakses halaman step3...")
-        
-        if not self.is_logged_in:
-            return {"status": "ERROR", "message": "Belum login. Jalankan login() dulu."}
+        logger.info("TUGAS 2: Membuka step3...")
+        logger.info(f"URL: {self.step3_url}")
         
         try:
             response = self.session.get(self.step3_url, headers=self.headers, timeout=30)
             
-            logger.info(f"Response Status: {response.status_code}")
+            logger.info(f"Status: {response.status_code}")
+            logger.info(f"Response: {response.text[:200]}")
             
             if response.status_code == 200:
-                # Cek apakah response JSON error atau HTML
-                if response.text.startswith('{'):
-                    try:
-                        data = response.json()
-                        if data.get('ret') == '-1':
-                            return {"status": "ERROR", "message": f"Step3 tidak bisa diakses: {data.get('msg')}"}
-                    except:
-                        pass
-                
-                # Extract CSRF token jika belum ada
-                if not self.csrf_token:
-                    csrf_pattern = r'name=["\']_csrf["\'][^>]*value=["\']([^"\']+)["\']'
-                    match = re.search(csrf_pattern, response.text)
-                    if match:
-                        self.csrf_token = match.group(1)
-                        self.headers['Cookie'] = f'_csrf={self.csrf_token}'
-                        logger.info(f"✅ CSRF Token dari step3: {self.csrf_token[:30]}...")
-                
-                return {"status": "SUCCESS", "message": "Step3 berhasil diakses!", "html_length": len(response.text)}
+                self.step3_opened = True
+                return {"status": "SUCCESS", "message": "Step3 berhasil dibuka!", "response": response.text[:500]}
             else:
-                return {"status": "ERROR", "message": f"Gagal akses step3 (HTTP {response.status_code})"}
+                return {"status": "ERROR", "message": f"Step3 gagal dibuka (HTTP {response.status_code})", "response": response.text[:200]}
                 
         except Exception as e:
             logger.error(f"Error: {e}")
             return {"status": "ERROR", "message": str(e)}
 
-    def check_kpj(self, kpj: str) -> dict:
-        """Step 3: Cek data KPJ"""
-        logger.info("="*50)
-        logger.info(f"STEP 3: Mengecek KPJ: {kpj}")
-        
-        if not self.is_logged_in:
-            login_result = self.login()
-            if login_result['status'] != 'SUCCESS':
-                return login_result
-        
-        try:
-            # Siapkan payload
-            payload = {'kpj': kpj}
-            if self.csrf_token:
-                payload['_csrf'] = self.csrf_token
-            
-            # Headers untuk AJAX request
-            headers = {
-                **self.headers,
-                'X-Requested-With': 'XMLHttpRequest',
-                'Content-Type': 'application/x-www-form-urlencoded',
-                'Referer': self.step3_url,
-                'Origin': self.base_url,
-            }
-            
-            logger.info(f"POST ke: {self.check_url}")
-            logger.info(f"Payload: {payload}")
-            
-            response = self.session.post(self.check_url, data=payload, headers=headers, timeout=30)
-            
-            logger.info(f"Response Status: {response.status_code}")
-            logger.info(f"Response Body: {response.text[:300]}")
-            
-            if response.status_code == 200:
-                # Coba parse JSON
-                try:
-                    data = response.json()
-                    if data.get('ret') == '0':
-                        # Sukses
-                        result = {
-                            "status": "SUCCESS",
-                            "message": "Data ditemukan!",
-                            "data": data
-                        }
-                        # Extract personal data jika ada
-                        if 'data' in data and isinstance(data['data'], list) and len(data['data']) > 0:
-                            result['personal'] = data['data'][0]
-                        return result
-                    else:
-                        return {"status": "ERROR", "message": data.get('msg', 'KPJ tidak valid')}
-                except json.JSONDecodeError:
-                    # Jika response HTML
-                    if 'success' in response.text.lower() or 'berhasil' in response.text.lower():
-                        return {"status": "SUCCESS", "message": "Berhasil!", "data": response.text[:500]}
-                    return {"status": "ERROR", "message": f"Response: {response.text[:100]}"}
-            else:
-                return {"status": "ERROR", "message": f"HTTP {response.status_code}"}
-                
-        except Exception as e:
-            logger.error(f"Error: {e}")
-            return {"status": "ERROR", "message": str(e)}
 
-    def get_full_process(self, kpj: str) -> dict:
-        """Jalankan seluruh proses: Login -> Step3 -> Cek KPJ"""
-        # Step 1: Login dengan token
-        login_result = self.login()
-        if login_result['status'] != 'SUCCESS':
-            return login_result
-        
-        # Step 2: Akses step3
-        step3_result = self.access_step3()
-        if step3_result['status'] != 'SUCCESS':
-            return step3_result
-        
-        # Step 3: Cek KPJ
-        check_result = self.check_kpj(kpj)
-        return check_result
+bot = POMBot()
 
 
-# Inisialisasi scraper
-scraper = POMScraper()
-
-
-# HTML Template (Sederhana tapi lengkap)
+# HTML Template
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
-<html lang="id">
+<html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>POM BPJS Scraper</title>
+    <title>POM BPJS - Token Opener</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -255,20 +129,9 @@ HTML_TEMPLATE = '''
             cursor: pointer;
             margin-bottom: 15px;
         }
-        .btn-login { background: #28a745; color: white; }
-        .btn-check { background: #667eea; color: white; }
+        .btn-token { background: #28a745; color: white; }
+        .btn-step3 { background: #17a2b8; color: white; }
         button:disabled { opacity: 0.6; cursor: not-allowed; }
-        input {
-            width: 100%;
-            padding: 12px;
-            font-size: 16px;
-            border: 2px solid #ddd;
-            border-radius: 10px;
-            text-align: center;
-            letter-spacing: 2px;
-            margin-bottom: 15px;
-            box-sizing: border-box;
-        }
         .result {
             margin-top: 20px;
             padding: 15px;
@@ -287,20 +150,7 @@ HTML_TEMPLATE = '''
             overflow-x: auto;
             font-size: 11px;
             white-space: pre-wrap;
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 10px;
-        }
-        td {
-            padding: 10px;
-            border-bottom: 1px solid #ddd;
-        }
-        td:first-child {
-            font-weight: bold;
-            width: 35%;
-            background: #f0f0f0;
+            max-height: 200px;
         }
         .log {
             background: #1a1a2e;
@@ -309,7 +159,7 @@ HTML_TEMPLATE = '''
             border-radius: 8px;
             font-family: monospace;
             font-size: 10px;
-            max-height: 200px;
+            max-height: 150px;
             overflow-y: auto;
             margin-top: 15px;
         }
@@ -319,181 +169,162 @@ HTML_TEMPLATE = '''
             border: none;
             border-top: 1px solid #ddd;
         }
+        .iframe-container {
+            margin-top: 20px;
+            border: 1px solid #ddd;
+            border-radius: 10px;
+            overflow: hidden;
+        }
+        iframe {
+            width: 100%;
+            height: 400px;
+            border: none;
+        }
+        .link-info {
+            font-size: 11px;
+            color: #666;
+            word-break: break-all;
+            margin-top: 5px;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="card">
-            <h1>🏦 POM BPJS Scraper</h1>
-            <div class="sub">Buka Token → Step3 → Cek KPJ</div>
+            <h1>🏦 POM BPJS Opener</h1>
+            <div class="sub">Buka Token → Buka Step3</div>
             
-            <div id="status" class="status status-red">❌ Belum Login</div>
+            <div id="statusToken" class="status status-red">❌ Token: Belum dibuka</div>
+            <div id="statusStep3" class="status status-red">❌ Step3: Belum dibuka</div>
             
-            <button id="loginBtn" class="btn-login" onclick="doFullProcess()">🚀 PROSES FULL (Login → Step3 → Cek KPJ)</button>
-            
-            <hr>
-            
-            <h3 style="margin-bottom: 15px;">🔍 Atau Cek KPJ Manual</h3>
-            <input type="text" id="kpj" maxlength="11" placeholder="Nomor KPJ (11 digit)" autocomplete="off" value="22119520694">
-            <button id="checkBtn" class="btn-check" onclick="checkKPJ()" disabled>🔍 CEK KPJ</button>
+            <button id="tokenBtn" class="btn-token" onclick="bukaToken()">1️⃣ BUKA TOKEN</button>
+            <button id="step3Btn" class="btn-step3" onclick="bukaStep3()" disabled>2️⃣ BUKA STEP3</button>
             
             <div id="result" class="result">
-                <h4>📊 Hasil</h4>
+                <h4>📋 Hasil</h4>
                 <div id="resultContent"></div>
             </div>
             
             <div id="log" class="log">
-                <p>📋 Log akan muncul di sini...</p>
+                <p>📋 Klik tombol di atas...</p>
             </div>
+        </div>
+        
+        <!-- Jika token berhasil, tampilkan iframe step3 -->
+        <div id="iframeContainer" class="card" style="display: none;">
+            <h3>🌐 Halaman Step3</h3>
+            <div class="iframe-container">
+                <iframe id="step3Frame" src="about:blank"></iframe>
+            </div>
+            <div class="link-info" id="step3Url"></div>
         </div>
     </div>
 
     <script>
-        let isLoggedIn = false;
+        let tokenOpened = false;
         
-        function addLog(msg) {
+        function addLog(msg, isError = false) {
             const logDiv = document.getElementById('log');
             const time = new Date().toLocaleTimeString();
-            logDiv.innerHTML += `<p>[${time}] ${msg}</p>`;
+            const color = isError ? '#ff6b6b' : '#0f0';
+            logDiv.innerHTML += `<p style="color: ${color}">[${time}] ${msg}</p>`;
             logDiv.scrollTop = logDiv.scrollHeight;
         }
         
-        function updateStatus(message, isSuccess) {
-            const statusDiv = document.getElementById('status');
+        function updateStatus(elementId, message, isSuccess) {
+            const el = document.getElementById(elementId);
             if (isSuccess) {
-                statusDiv.innerHTML = '✅ ' + message;
-                statusDiv.className = 'status status-green';
+                el.innerHTML = '✅ ' + message;
+                el.className = 'status status-green';
             } else {
-                statusDiv.innerHTML = '❌ ' + message;
-                statusDiv.className = 'status status-red';
+                el.innerHTML = '❌ ' + message;
+                el.className = 'status status-red';
             }
         }
         
-        async function doFullProcess() {
-            const btn = document.getElementById('loginBtn');
-            const checkBtn = document.getElementById('checkBtn');
-            const kpj = document.getElementById('kpj').value.trim();
+        function showResult(type, content) {
+            const resultDiv = document.getElementById('result');
+            const contentDiv = document.getElementById('resultContent');
             
-            if (!kpj || !/^\\d{11}$/.test(kpj)) {
-                alert('Masukkan KPJ 11 digit angka!');
-                return;
+            if (type === 'success') {
+                contentDiv.innerHTML = `<div class="success">✅ ${content}</div>`;
+            } else {
+                contentDiv.innerHTML = `<div class="error">❌ ${content}</div>`;
             }
+            resultDiv.classList.add('show');
+        }
+        
+        async function bukaToken() {
+            const btn = document.getElementById('tokenBtn');
+            const step3Btn = document.getElementById('step3Btn');
             
             btn.disabled = true;
-            updateStatus('Memproses... (Login → Step3 → Cek KPJ)', false);
-            addLog('🚀 Memulai proses full...');
-            addLog(`KPJ: ${kpj}`);
+            updateStatus('statusToken', 'Membuka token...', false);
+            addLog('🚀 Membuka token URL...');
             
             try {
-                const res = await fetch('/full-process', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ kpj: kpj })
-                });
-                
+                const res = await fetch('/buka-token', { method: 'POST' });
                 const data = await res.json();
                 addLog(`Response: ${JSON.stringify(data)}`);
                 
                 if (data.status === 'SUCCESS') {
-                    isLoggedIn = true;
-                    updateStatus('Berhasil! Data ditemukan.', true);
-                    checkBtn.disabled = false;
-                    showResult(data);
+                    tokenOpened = true;
+                    updateStatus('statusToken', 'Token berhasil dibuka!', true);
+                    step3Btn.disabled = false;
+                    showResult('success', 'Token berhasil dibuka! Sekarang klik "BUKA STEP3"');
+                    addLog('✅ Token berhasil dibuka');
                 } else {
-                    updateStatus('Gagal: ' + data.message, false);
-                    showResult({ status: 'ERROR', message: data.message });
+                    updateStatus('statusToken', 'Token gagal dibuka', false);
+                    showResult('error', data.message);
+                    addLog(`❌ Gagal: ${data.message}`, true);
                 }
             } catch (err) {
-                addLog('❌ Error: ' + err.message);
-                updateStatus('Error: ' + err.message, false);
-                showResult({ status: 'ERROR', message: err.message });
+                addLog(`❌ Error: ${err.message}`, true);
+                updateStatus('statusToken', 'Error: ' + err.message, false);
+                showResult('error', err.message);
             } finally {
                 btn.disabled = false;
             }
         }
         
-        async function checkKPJ() {
-            if (!isLoggedIn) {
-                alert('Proses full dulu! Klik tombol "PROSES FULL"');
+        async function bukaStep3() {
+            if (!tokenOpened) {
+                alert('Buka token dulu!');
                 return;
             }
             
-            const kpj = document.getElementById('kpj').value.trim();
-            if (!kpj || !/^\\d{11}$/.test(kpj)) {
-                alert('Masukkan KPJ 11 digit angka!');
-                return;
-            }
-            
-            const btn = document.getElementById('checkBtn');
+            const btn = document.getElementById('step3Btn');
             btn.disabled = true;
-            addLog(`Cek KPJ: ${kpj}`);
+            updateStatus('statusStep3', 'Membuka step3...', false);
+            addLog('🚀 Membuka step3...');
             
             try {
-                const res = await fetch('/check', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ kpj: kpj })
-                });
-                
+                const res = await fetch('/buka-step3', { method: 'POST' });
                 const data = await res.json();
                 addLog(`Response: ${JSON.stringify(data)}`);
-                showResult(data);
+                
+                if (data.status === 'SUCCESS') {
+                    updateStatus('statusStep3', 'Step3 berhasil dibuka!', true);
+                    showResult('success', 'Step3 berhasil dibuka!');
+                    addLog('✅ Step3 berhasil dibuka');
+                    
+                    // Tampilkan iframe dengan step3
+                    const step3Url = 'https://pom.bpjsketenagakerjaan.go.id/pu/step3';
+                    document.getElementById('step3Frame').src = step3Url;
+                    document.getElementById('step3Url').innerHTML = `🔗 ${step3Url}`;
+                    document.getElementById('iframeContainer').style.display = 'block';
+                } else {
+                    updateStatus('statusStep3', 'Step3 gagal dibuka', false);
+                    showResult('error', data.message);
+                    addLog(`❌ Gagal: ${data.message}`, true);
+                }
             } catch (err) {
-                addLog('Error: ' + err.message);
-                showResult({ status: 'ERROR', message: err.message });
+                addLog(`❌ Error: ${err.message}`, true);
+                updateStatus('statusStep3', 'Error: ' + err.message, false);
+                showResult('error', err.message);
             } finally {
                 btn.disabled = false;
             }
-        }
-        
-        function showResult(data) {
-            const resultDiv = document.getElementById('result');
-            const contentDiv = document.getElementById('resultContent');
-            
-            if (data.status === 'SUCCESS') {
-                let html = '<div class="success">✅ Data Ditemukan!</div>';
-                
-                let personal = data.personal || data.data;
-                
-                if (personal && typeof personal === 'object') {
-                    html += '<tr>';
-                    const fieldMap = {
-                        'nik': 'NIK',
-                        'nomorIdentitas': 'NIK',
-                        'namaLengkap': 'Nama Lengkap',
-                        'nama': 'Nama',
-                        'kpj': 'KPJ',
-                        'nomUpah': 'Gaji',
-                        'gaji': 'Gaji',
-                        'tanggalLahir': 'Tanggal Lahir',
-                        'jenisKelamin': 'Jenis Kelamin',
-                        'statusKawin': 'Status Kawin',
-                        'alamat': 'Alamat'
-                    };
-                    
-                    for (const [key, value] of Object.entries(personal)) {
-                        if (fieldMap[key] || key.toLowerCase().includes('nama') || key.toLowerCase().includes('nik') || key.toLowerCase().includes('kpj')) {
-                            const label = fieldMap[key] || key;
-                            html += `<tr><td style="font-weight: bold">${label}</td><td>${escapeHtml(String(value))}</td></tr>`;
-                        }
-                    }
-                    html += '\\u003c/table>';
-                } else {
-                    html += `<pre>${escapeHtml(JSON.stringify(data.data, null, 2))}</pre>`;
-                }
-                
-                contentDiv.innerHTML = html;
-            } else {
-                contentDiv.innerHTML = `<div class="error">❌ ${escapeHtml(data.message || 'Error')}</div>`;
-            }
-            
-            resultDiv.classList.add('show');
-        }
-        
-        function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
         }
     </script>
 </body>
@@ -506,59 +337,22 @@ def index():
     return render_template_string(HTML_TEMPLATE)
 
 
-@app.route('/login', methods=['POST'])
-def login():
-    """Endpoint untuk login dengan token"""
-    result = scraper.login()
+@app.route('/buka-token', methods=['POST'])
+def buka_token():
+    result = bot.buka_token()
     return jsonify(result)
 
 
-@app.route('/step3', methods=['POST'])
-def step3():
-    """Endpoint untuk akses step3"""
-    result = scraper.access_step3()
+@app.route('/buka-step3', methods=['POST'])
+def buka_step3():
+    result = bot.buka_step3()
     return jsonify(result)
-
-
-@app.route('/check', methods=['POST'])
-def check():
-    """Endpoint untuk cek KPJ (harus sudah login)"""
-    data = request.get_json()
-    kpj = data.get('kpj', '').strip()
-    
-    if not kpj or len(kpj) != 11 or not kpj.isdigit():
-        return jsonify({"status": "ERROR", "message": "KPJ harus 11 digit angka!"})
-    
-    result = scraper.check_kpj(kpj)
-    return jsonify(result)
-
-
-@app.route('/full-process', methods=['POST'])
-def full_process():
-    """Endpoint untuk menjalankan seluruh proses: Login -> Step3 -> Cek KPJ"""
-    data = request.get_json()
-    kpj = data.get('kpj', '').strip()
-    
-    if not kpj or len(kpj) != 11 or not kpj.isdigit():
-        return jsonify({"status": "ERROR", "message": "KPJ harus 11 digit angka!"})
-    
-    result = scraper.get_full_process(kpj)
-    return jsonify(result)
-
-
-@app.route('/status')
-def status():
-    return jsonify({
-        "is_logged_in": scraper.is_logged_in,
-        "csrf_available": scraper.csrf_token is not None
-    })
 
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    print("="*60)
-    print("🏦 POM BPJS Scraper - FULL VERSION")
-    print("="*60)
-    print(f"📱 Buka di browser: http://localhost:{port}")
-    print("="*60)
+    print("="*50)
+    print("POM BPJS Opener")
+    print(f"Buka: http://localhost:{port}")
+    print("="*50)
     app.run(debug=False, host='0.0.0.0', port=port)
