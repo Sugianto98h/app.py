@@ -4,6 +4,7 @@ import json
 import os
 import logging
 import time
+import re
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -12,12 +13,14 @@ app = Flask(__name__)
 
 class POMDataFinder:
     def __init__(self):
+        # URL dari aplikasi Android
         self.step3_url = "https://pom.bpjsketenagakerjaan.go.id/pu/step3"
-        self.check_url = "https://pom.bpjsketenagakerjaan.go.id/pu/prosesHapusTkAll"
+        # Endpoint yang benar (dari kode Android)
+        self.check_url = "https://pom.bpjsketenagakerjaan.go.id/pu/prosesPendaftaranTkKPJ"
         
         self.session = requests.Session()
         
-        # COOKIE SESSION YANG VALID
+        # COOKIE SESSION YANG VALID (dari browser/Android)
         self.cookies = {
             'BIGipServerPOM_PUBLIK.app~POM_PUBLIK_pool': '!bzHFEKiCm9566ujniNkIKL0LQO8PDT4V1meh8znNFq7BIsYsOt/ZcmFPliFPJB9HfkzlFp1sGQYfR8L7J6aVmOmnu2uYZdbUxkHYRQ5Pog',
             'connect.sid': 's%3AVUIfl_td4CZ8KSFhG7D0uCw_xQ4CayLw.swa4SZgv5kgKM4wqoPn25Pk9n8psTd%2Bfvl8l64xb1nU',
@@ -26,13 +29,14 @@ class POMDataFinder:
         }
         
         self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0 (Linux; Android 14; SM-S911B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.144 Mobile Safari/537.36',
             'Accept': 'application/json, text/plain, */*',
             'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
             'Referer': self.step3_url,
             'Origin': 'https://pom.bpjsketenagakerjaan.go.id',
             'X-Requested-With': 'XMLHttpRequest',
             'Connection': 'keep-alive',
+            'Content-Type': 'application/x-www-form-urlencoded',
         }
         
         self.is_connected = False
@@ -65,7 +69,11 @@ class POMDataFinder:
             return {"status": "ERROR", "message": str(e)}
 
     def cari_data(self, kpj: str, retry: int = 0) -> dict:
-        """Cari data berdasarkan KPJ dengan retry mechanism"""
+        """
+        Cari data berdasarkan KPJ
+        Menggunakan endpoint yang sama dengan aplikasi Android:
+        /pu/prosesPendaftaranTkKPJ
+        """
         logger.info(f"Mencari data KPJ: {kpj} (percobaan ke-{retry+1})")
         
         if not self.is_connected:
@@ -74,10 +82,12 @@ class POMDataFinder:
                 return test
         
         try:
-            # Siapkan payload
-            payload = {'kpj': kpj}
+            # Siapkan payload (sama seperti di Android)
+            payload = f'kpj={kpj}'
             
-            # Timeout lebih panjang (60 detik)
+            logger.info(f"POST ke: {self.check_url}")
+            logger.info(f"Payload: {payload}")
+            
             response = self.session.post(
                 self.check_url, 
                 data=payload, 
@@ -87,12 +97,18 @@ class POMDataFinder:
             )
             
             logger.info(f"Response Status: {response.status_code}")
+            logger.info(f"Response Body: {response.text[:500]}")
             
             if response.status_code == 200:
                 try:
                     data = response.json()
                     
+                    # Cek response ret code (sama seperti di Android)
                     if data.get('ret') == '0':
+                        logger.info("✅ KPJ valid! Mengambil data...")
+                        
+                        # Jika sukses, kita perlu mengambil data dari halaman berikutnya
+                        # Atau jika data sudah ada di response, langsung ambil
                         result_data = data.get('data', [])
                         
                         if result_data and len(result_data) > 0:
@@ -104,23 +120,142 @@ class POMDataFinder:
                                 "raw": data
                             }
                         else:
-                            return {"status": "ERROR", "message": "Data kosong"}
+                            # Jika data tidak ada di response, ambil dari halaman step3
+                            return self._ambil_data_dari_halaman(kpj)
+                    
+                    elif data.get('ret') == '-2':
+                        return {"status": "ERROR", "message": "Klaim Penuh - KPJ sudah pernah diklaim"}
+                    
+                    elif data.get('ret') == '-1':
+                        return {"status": "ERROR", "message": data.get('msg', 'Terjadi kesalahan')}
+                    
                     else:
                         return {"status": "ERROR", "message": data.get('msg', 'KPJ tidak valid atau tidak ditemukan')}
                         
                 except json.JSONDecodeError:
+                    logger.warning(f"Response bukan JSON: {response.text[:200]}")
+                    
+                    # Cek apakah response mengandung pesan sukses
+                    if 'success' in response.text.lower() or 'berhasil' in response.text.lower():
+                        return self._ambil_data_dari_halaman(kpj)
+                    
                     return {"status": "ERROR", "message": f"Response bukan JSON: {response.text[:100]}"}
             else:
                 return {"status": "ERROR", "message": f"HTTP {response.status_code}"}
                 
         except requests.exceptions.Timeout:
             logger.warning(f"Timeout untuk KPJ: {kpj}")
-            if retry < 2:  # Maksimal 3 percobaan
-                time.sleep(3)  # Tunggu 3 detik sebelum retry
+            if retry < 2:
+                time.sleep(3)
                 return self.cari_data(kpj, retry + 1)
-            return {"status": "ERROR", "message": "Request timeout setelah 3 kali percobaan. Server POM lambat merespon."}
+            return {"status": "ERROR", "message": "Request timeout setelah 3 kali percobaan"}
         except Exception as e:
             logger.error(f"Error: {e}")
+            return {"status": "ERROR", "message": str(e)}
+
+    def _ambil_data_dari_halaman(self, kpj: str) -> dict:
+        """
+        Ambil data dari halaman step3 setelah KPJ berhasil divalidasi
+        Menggunakan metode seperti di aplikasi Android (injectAmbilTK)
+        """
+        logger.info(f"Mengambil data dari halaman untuk KPJ: {kpj}")
+        
+        try:
+            # Ambil halaman step3
+            response = self.session.get(self.step3_url, headers=self.headers, cookies=self.cookies, timeout=30)
+            
+            if response.status_code != 200:
+                return {"status": "ERROR", "message": "Gagal mengambil halaman data"}
+            
+            html = response.text
+            
+            # Extract data dari tabel (seperti di Android)
+            # Cari tabel dengan id 'datatable'
+            table_pattern = r'<table[^>]*id=["\']datatable["\'][^>]*>(.*?)</table>'
+            table_match = re.search(table_pattern, html, re.DOTALL)
+            
+            if not table_match:
+                return {"status": "ERROR", "message": "Tabel data tidak ditemukan"}
+            
+            table_html = table_match.group(1)
+            
+            # Cari baris yang mengandung KPJ
+            row_pattern = r'<tr[^>]*>(.*?)</tr>'
+            rows = re.findall(row_pattern, table_html, re.DOTALL)
+            
+            # Cari header untuk mengetahui index kolom
+            headers = []
+            if rows:
+                header_row = rows[0]
+                header_pattern = r'<th[^>]*>(.*?)</th>'
+                headers = re.findall(header_pattern, header_row, re.DOTALL)
+                headers = [re.sub(r'<[^>]+>', '', h).strip() for h in headers]
+            
+            # Cari index kolom yang dibutuhkan
+            idx_nik = -1
+            idx_kpj = -1
+            idx_nama = -1
+            
+            for i, h in enumerate(headers):
+                h_lower = h.lower()
+                if 'nomor identitas' in h_lower or 'nik' in h_lower:
+                    idx_nik = i
+                elif 'no kartu peserta' in h_lower or 'kpj' in h_lower:
+                    idx_kpj = i
+                elif 'nama' in h_lower:
+                    idx_nama = i
+            
+            # Jika header tidak ditemukan, coba dengan posisi default
+            if idx_kpj == -1:
+                idx_kpj = 1  # asumsi kolom ke-2
+            if idx_nik == -1:
+                idx_nik = 0  # asumsi kolom ke-1
+            if idx_nama == -1:
+                idx_nama = 2  # asumsi kolom ke-3
+            
+            # Cari data di baris data (mulai dari baris ke-2)
+            for row in rows[1:]:
+                cells = re.findall(r'<td[^>]*>(.*?)</td>', row, re.DOTALL)
+                if len(cells) <= max(idx_kpj, idx_nik, idx_nama):
+                    continue
+                
+                # Bersihkan cell dari tag HTML
+                cells_clean = [re.sub(r'<[^>]+>', '', c).strip() for c in cells]
+                
+                if idx_kpj < len(cells_clean) and cells_clean[idx_kpj] == kpj:
+                    # Data ditemukan
+                    personal = {
+                        "nik": cells_clean[idx_nik] if idx_nik < len(cells_clean) else "",
+                        "kpj": cells_clean[idx_kpj] if idx_kpj < len(cells_clean) else "",
+                        "nama": cells_clean[idx_nama] if idx_nama < len(cells_clean) else "",
+                    }
+                    
+                    # Cari field tambahan
+                    field_labels = ['upah', 'gaji', 'tanggal_lahir', 'tgl_lahir', 'jenis_kelamin', 'status_kawin', 'alamat']
+                    for i, cell in enumerate(cells_clean):
+                        if i < len(headers):
+                            header_lower = headers[i].lower()
+                            if 'upah' in header_lower or 'gaji' in header_lower:
+                                personal['gaji'] = cell
+                            elif 'tanggal' in header_lower or 'tgl' in header_lower:
+                                personal['tanggal_lahir'] = cell
+                            elif 'jenis' in header_lower or 'kelamin' in header_lower:
+                                personal['jenis_kelamin'] = cell
+                            elif 'kawin' in header_lower or 'status' in header_lower:
+                                personal['status_kawin'] = cell
+                            elif 'alamat' in header_lower:
+                                personal['alamat'] = cell
+                    
+                    return {
+                        "status": "SUCCESS",
+                        "message": "Data ditemukan!",
+                        "data": personal
+                    }
+            
+            return {"status": "ERROR", "message": f"Data dengan KPJ {kpj} tidak ditemukan di tabel"}
+            
+        except Exception as e:
+            logger.error(f"Error mengambil data: {e}")
             return {"status": "ERROR", "message": str(e)}
 
 
@@ -128,7 +263,7 @@ class POMDataFinder:
 finder = POMDataFinder()
 
 
-# HTML Template
+# HTML Template (sama seperti sebelumnya)
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
 <html lang="id">
@@ -155,18 +290,8 @@ HTML_TEMPLATE = '''
             margin-bottom: 20px;
             box-shadow: 0 10px 40px rgba(0,0,0,0.2);
         }
-        h1 {
-            color: #333;
-            text-align: center;
-            margin-bottom: 5px;
-            font-size: 24px;
-        }
-        .sub {
-            text-align: center;
-            color: #666;
-            margin-bottom: 25px;
-            font-size: 13px;
-        }
+        h1 { text-align: center; color: #333; margin-bottom: 5px; font-size: 24px; }
+        .sub { text-align: center; color: #666; margin-bottom: 25px; font-size: 13px; }
         .status {
             text-align: center;
             padding: 12px;
@@ -212,20 +337,9 @@ HTML_TEMPLATE = '''
         .success { background: #d4edda; color: #155724; padding: 10px; border-radius: 8px; margin-bottom: 15px; }
         .error { background: #f8d7da; color: #721c24; padding: 10px; border-radius: 8px; margin-bottom: 15px; }
         .warning { background: #fff3cd; color: #856404; padding: 10px; border-radius: 8px; margin-bottom: 15px; }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 10px;
-        }
-        td {
-            padding: 10px;
-            border-bottom: 1px solid #ddd;
-        }
-        td:first-child {
-            font-weight: bold;
-            width: 35%;
-            background: #f0f0f0;
-        }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        td { padding: 10px; border-bottom: 1px solid #ddd; }
+        td:first-child { font-weight: bold; width: 35%; background: #f0f0f0; }
         .log {
             background: #1a1a2e;
             color: #0f0;
@@ -238,11 +352,7 @@ HTML_TEMPLATE = '''
             margin-top: 15px;
         }
         .log p { margin: 3px 0; }
-        hr {
-            margin: 20px 0;
-            border: none;
-            border-top: 1px solid #ddd;
-        }
+        hr { margin: 20px 0; border: none; border-top: 1px solid #ddd; }
         .cookie-info {
             background: #e7f3ff;
             padding: 10px;
@@ -251,11 +361,7 @@ HTML_TEMPLATE = '''
             word-break: break-all;
             margin-top: 15px;
         }
-        .cookie-info summary {
-            cursor: pointer;
-            font-weight: bold;
-            color: #0066cc;
-        }
+        .cookie-info summary { cursor: pointer; font-weight: bold; color: #0066cc; }
         .spinner {
             display: inline-block;
             width: 16px;
@@ -351,10 +457,7 @@ HTML_TEMPLATE = '''
                     'tglLahir': 'Tanggal Lahir',
                     'jenisKelamin': 'Jenis Kelamin',
                     'statusKawin': 'Status Kawin',
-                    'alamat': 'Alamat',
-                    'kodePos': 'Kode Pos',
-                    'hp': 'Nomor HP',
-                    'email': 'Email'
+                    'alamat': 'Alamat'
                 };
                 
                 let found = false;
@@ -369,7 +472,7 @@ HTML_TEMPLATE = '''
                 if (!found) {
                     html += `<tr><td colspan="2">${escapeHtml(JSON.stringify(data, null, 2))}</td></tr>`;
                 }
-                html += '\\u003c/table>';
+                html += '</table>';
                 contentDiv.innerHTML = html;
             } else if (type === 'success') {
                 contentDiv.innerHTML = `<div class="success">✅ ${escapeHtml(content)}</div>`;
@@ -464,7 +567,7 @@ HTML_TEMPLATE = '''
                     updateStatus('✅ Data ditemukan!', 'success');
                     showResult('success', 'Data ditemukan!', data.data);
                     addLog('✅ Data berhasil ditemukan');
-                } else if (data.message.includes('timeout')) {
+                } else if (data.message && data.message.includes('timeout')) {
                     updateStatus('⚠️ Timeout - Server lambat', 'error');
                     showResult('warning', data.message);
                     addLog(`⚠️ ${data.message}`, false, true);
