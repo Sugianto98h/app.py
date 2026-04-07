@@ -23,6 +23,7 @@ class POMScraper:
         self.step3_url = "https://pom.bpjsketenagakerjaan.go.id/pu/step3"
         self.check_url = "https://pom.bpjsketenagakerjaan.go.id/pu/prosesPendaftaranTkKPJ"
         self.input_tk_step1_url = "https://pom.bpjsketenagakerjaan.go.id/pu/input-tk-nik-step1"
+        self.get_list_tk_url = "https://pom.bpjsketenagakerjaan.go.id/pu/getListTk"
         
         self.session = requests.Session()
         self.csrf_token = None
@@ -58,6 +59,41 @@ class POMScraper:
                 return match.group(1)
         return None
 
+    def _extract_from_table(self, html):
+        """Extract data dari tabel di halaman step3"""
+        data = {}
+        
+        # Cari tabel data
+        table_pattern = r'<table[^>]*id=["\']datatable["\'][^>]*>(.*?)</table>'
+        table_match = re.search(table_pattern, html, re.DOTALL)
+        
+        if table_match:
+            table_html = table_match.group(1)
+            
+            # Cari semua baris
+            row_pattern = r'<tr[^>]*>(.*?)</tr>'
+            rows = re.findall(row_pattern, table_html, re.DOTALL)
+            
+            if rows:
+                # Ambil header untuk mapping
+                header_row = rows[0] if rows else ""
+                header_pattern = r'<th[^>]*>(.*?)</th>'
+                headers = re.findall(header_pattern, header_row, re.DOTALL)
+                headers = [re.sub(r'<[^>]+>', '', h).strip().lower() for h in headers]
+                
+                # Cari data di baris berikutnya
+                for row in rows[1:3]:  # Ambil beberapa baris pertama
+                    cells = re.findall(r'<td[^>]*>(.*?)</td>', row, re.DOTALL)
+                    cells_clean = [re.sub(r'<[^>]+>', '', c).strip() for c in cells]
+                    
+                    if cells_clean:
+                        for i, cell in enumerate(cells_clean):
+                            if i < len(headers):
+                                data[headers[i]] = cell
+                        break
+        
+        return data
+
     def _extract_form_data(self, html):
         """Extract data from form di halaman input-tk-nik-step1"""
         data = {}
@@ -80,7 +116,7 @@ class POMScraper:
         if tgl_match:
             data['tanggal_lahir'] = tgl_match.group(1)
         
-        # Extract Jenis Kelamin (dari select)
+        # Extract Jenis Kelamin
         jk_pattern = r'name=["\']jenis_kelamin["\'][^>]*>.*?<option[^>]*selected[^>]*value=["\']([^"\']+)["\']'
         jk_match = re.search(jk_pattern, html, re.DOTALL)
         if jk_match:
@@ -125,7 +161,7 @@ class POMScraper:
             return {"status": "ERROR", "message": str(e)}
 
     def cek_kpj(self, kpj: str) -> dict:
-        """Cek KPJ dan ambil data dari input-tk-nik-step1"""
+        """Cek KPJ dan ambil data dari berbagai sumber"""
         if not self.is_logged_in:
             login_result = self.login()
             if login_result['status'] != 'SUCCESS':
@@ -164,9 +200,11 @@ class POMScraper:
                         return {"status": "ERROR", "message": "Terlalu banyak request"}
 
                     if data.get('ret') == '0':
-                        logger.info("KPJ valid, mengambil data dari input-tk-nik-step1...")
+                        logger.info("KPJ valid, mengambil data...")
                         
-                        # Step 2: Ambil data dari halaman input-tk-nik-step1
+                        personal_data = {"kpj": kpj, "status": "VALID"}
+                        
+                        # Method 1: Coba ambil dari input-tk-nik-step1
                         self._wait()
                         form_response = self.session.get(
                             self.input_tk_step1_url, 
@@ -174,23 +212,72 @@ class POMScraper:
                             timeout=30
                         )
                         
-                        logger.info(f"Input-tk-nik-step1 Status: {form_response.status_code}")
-                        
                         if form_response.status_code == 200:
-                            # Extract data dari form HTML
-                            personal_data = self._extract_form_data(form_response.text)
-                            personal_data['kpj'] = kpj
-                            personal_data['status'] = 'VALID'
-                            
-                            logger.info(f"Data ditemukan: {json.dumps(personal_data, indent=2)}")
-                            
-                            return {
-                                "status": "SUCCESS", 
-                                "message": "Data ditemukan!",
-                                "data": personal_data
-                            }
-                        else:
-                            return {"status": "ERROR", "message": f"Gagal mengambil form data (HTTP {form_response.status_code})"}
+                            form_data = self._extract_form_data(form_response.text)
+                            personal_data.update(form_data)
+                            logger.info(f"Data dari form: {form_data}")
+                        
+                        # Method 2: Coba ambil dari getListTk
+                        self._wait()
+                        list_headers = {
+                            **self._get_headers(self.step3_url),
+                            'X-Requested-With': 'XMLHttpRequest',
+                        }
+                        list_response = self.session.get(
+                            self.get_list_tk_url,
+                            headers=list_headers,
+                            timeout=30
+                        )
+                        
+                        if list_response.status_code == 200:
+                            try:
+                                list_data = list_response.json()
+                                if list_data.get('ret') == '0':
+                                    for item in list_data.get('data', []):
+                                        if item.get('kpj') == kpj:
+                                            if item.get('nik'):
+                                                personal_data['nik'] = item.get('nik')
+                                            if item.get('namaLengkap'):
+                                                personal_data['nama'] = item.get('namaLengkap')
+                                            if item.get('nama'):
+                                                personal_data['nama'] = item.get('nama')
+                                            if item.get('tanggalLahir'):
+                                                personal_data['tanggal_lahir'] = item.get('tanggalLahir')
+                                            if item.get('alamat'):
+                                                personal_data['alamat'] = item.get('alamat')
+                                            break
+                            except:
+                                pass
+                        
+                        # Method 3: Coba ambil dari tabel di step3
+                        self._wait()
+                        step3_response = self.session.get(
+                            self.step3_url,
+                            headers=self._get_headers(self.step3_url),
+                            timeout=30
+                        )
+                        
+                        if step3_response.status_code == 200:
+                            table_data = self._extract_from_table(step3_response.text)
+                            if table_data:
+                                # Map field names
+                                for key, val in table_data.items():
+                                    if 'nik' in key or 'identitas' in key:
+                                        personal_data['nik'] = val
+                                    elif 'nama' in key:
+                                        personal_data['nama'] = val
+                                    elif 'tanggal' in key or 'tgl' in key:
+                                        personal_data['tanggal_lahir'] = val
+                                    elif 'alamat' in key:
+                                        personal_data['alamat'] = val
+                        
+                        logger.info(f"Final data: {json.dumps(personal_data, indent=2)}")
+                        
+                        return {
+                            "status": "SUCCESS", 
+                            "message": "Data ditemukan!",
+                            "data": personal_data
+                        }
 
                     if data.get('ret') == '-1':
                         self.is_logged_in = False
@@ -212,7 +299,7 @@ class POMScraper:
 scraper = POMScraper()
 
 
-# HTML Template (sama seperti sebelumnya)
+# HTML Template
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
 <html lang="id">
@@ -310,7 +397,7 @@ HTML_TEMPLATE = '''
     <div class="container">
         <div class="card">
             <h1>🔍 POM BPJS - Cek KPJ</h1>
-            <div class="sub">Buka Token → Step3 → Cek KPJ → Ambil Data</div>
+            <div class="sub">Buka Token → Step3 → Cek KPJ</div>
             
             <div id="status" class="status status-yellow">⏳ Belum login</div>
             
@@ -328,7 +415,7 @@ HTML_TEMPLATE = '''
             
             <div id="log" class="log">
                 <p>📋 Klik tombol untuk memulai...</p>
-                <p>📌 Alur: Token URL → Step3 → Cek KPJ → Ambil data dari input-tk-nik-step1</p>
+                <p>📌 Alur: Token URL → Step3 → Cek KPJ</p>
             </div>
         </div>
     </div>
@@ -364,19 +451,21 @@ HTML_TEMPLATE = '''
                 let html = '<div class="success">✅ Data Ditemukan!</div>';
                 if (data.data) {
                     html += '<table>';
-                    for (const [key, val] of Object.entries(data.data)) {
-                        if (val) {
-                            let label = key;
-                            if (key === 'nik') label = 'NIK';
-                            if (key === 'nama') label = 'Nama';
-                            if (key === 'kpj') label = 'KPJ';
-                            if (key === 'tanggal_lahir') label = 'Tanggal Lahir';
-                            if (key === 'jenis_kelamin') label = 'Jenis Kelamin';
-                            if (key === 'alamat') label = 'Alamat';
-                            html += `<td><td style="font-weight: bold">${label}</td><td>${escapeHtml(String(val))}</td></tr>`;
+                    const fields = [
+                        {key: 'nik', label: 'NIK'},
+                        {key: 'nama', label: 'Nama'},
+                        {key: 'kpj', label: 'KPJ'},
+                        {key: 'tanggal_lahir', label: 'Tanggal Lahir'},
+                        {key: 'jenis_kelamin', label: 'Jenis Kelamin'},
+                        {key: 'alamat', label: 'Alamat'},
+                        {key: 'status', label: 'Status'}
+                    ];
+                    for (const field of fields) {
+                        if (data.data[field.key]) {
+                            html += `<tr><td style="font-weight: bold">${field.label}</td><td>${escapeHtml(String(data.data[field.key]))}</td></tr>`;
                         }
                     }
-                    html += '\\u003c/table>';
+                    html += '</table>';
                 }
                 contentDiv.innerHTML = html;
             } else {
@@ -491,6 +580,5 @@ if __name__ == '__main__':
     print("="*50)
     print("🔍 POM BPJS - Cek KPJ")
     print(f"📱 Buka: http://localhost:{port}")
-    print("📌 Alur: Token URL → Step3 → Cek KPJ → Ambil data dari input-tk-nik-step1")
     print("="*50)
     app.run(debug=False, host='0.0.0.0', port=port)
