@@ -1,10 +1,10 @@
 from flask import Flask, request, jsonify, render_template_string
 import requests
+import re
 import json
 import os
 import logging
 import time
-import re
 import random
 
 logging.basicConfig(level=logging.INFO)
@@ -14,33 +14,35 @@ app = Flask(__name__)
 
 USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
 ]
 
-class POMScraper:
+class POMDataScraper:
     def __init__(self):
-        self.token_url = "https://pom.bpjsketenagakerjaan.go.id/pu/login?t=YTliOWM0OGNjMGExYWVlOTUyZGU2YTg5MjExNDk0YmFkYWZhOTQ0MzJkODZmZGUwYTY5OTNjMTUwMDI4MzIjMQ=="
         self.step3_url = "https://pom.bpjsketenagakerjaan.go.id/pu/step3"
         self.check_url = "https://pom.bpjsketenagakerjaan.go.id/pu/prosesPendaftaranTkKPJ"
-        self.input_tk_step1_url = "https://pom.bpjsketenagakerjaan.go.id/pu/input-tk-nik-step1"
-        self.get_list_tk_url = "https://pom.bpjsketenagakerjaan.go.id/pu/getListTk"
         
         self.session = requests.Session()
         self.csrf_token = None
         self.is_logged_in = False
         self.last_request_time = 0
         self.min_delay = 2
+        
+        # Cookie dari aplikasi Android
+        self.cookies = {
+            'BIGipServerPOM_PUBLIK.app~POM_PUBLIK_pool': '!bzHFEKiCm9566ujniNkIKL0LQO8PDT4V1meh8znNFq7BIsYsOt/ZcmFPliFPJB9HfkzlFp1sGQYfR8L7J6aVmOmnu2uYZdbUxkHYRQ5Pog',
+            'connect.sid': 's%3AbLZck55doqZOSYnKPmqFurPYbVysj9nK.koQyuuTttFJNg2vej7H22W9hVhKNA37JcpqnhckDm%2BE',
+            '_csrf': 'HO4coKDS5PTPdSxyTwrCG8j7',
+            'TS01859485': '011e8ab0a03d2392d5e5315c2ac48fb7e9f76294b4f900604d8951f0fdf256e45f08419bd1d3a9f41c86ce3b2137ec28cef6ab88926faef6d9f5f4d8e12396aa792f4b92e39dc8879dfa6b34c38afc79aa4ff099095a804e203a6f544279f1a2fe778dc209'
+        }
 
-    def _get_headers(self, referer=None):
-        headers = {
+    def _get_headers(self):
+        return {
             'User-Agent': random.choice(USER_AGENTS),
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
             'Connection': 'keep-alive',
+            'X-Requested-With': 'XMLHttpRequest',
         }
-        if referer:
-            headers['Referer'] = referer
-        return headers
 
     def _wait(self):
         current_time = time.time()
@@ -48,255 +50,148 @@ class POMScraper:
             time.sleep(self.min_delay)
         self.last_request_time = time.time()
 
-    def _extract_csrf(self, html):
-        patterns = [
-            r'name=["\']_csrf["\'][^>]*value=["\']([^"\']+)["\']',
-            r'_csrf["\']?\s*:\s*["\']([^"\']+)["\']',
-        ]
-        for pattern in patterns:
-            match = re.search(pattern, html)
-            if match:
-                return match.group(1)
-        return None
-
     def _extract_from_table(self, html):
-        """Extract data dari tabel di halaman step3"""
+        """Extract data dari tabel #datatable (seperti injectAmbilTK)"""
         data = {}
         
-        # Cari tabel data
+        # Cari tabel
         table_pattern = r'<table[^>]*id=["\']datatable["\'][^>]*>(.*?)</table>'
         table_match = re.search(table_pattern, html, re.DOTALL)
         
-        if table_match:
-            table_html = table_match.group(1)
-            
-            # Cari semua baris
+        if not table_match:
+            return data
+        
+        table_html = table_match.group(1)
+        
+        # Ambil header
+        header_pattern = r'<thead[^>]*>(.*?)</thead>'
+        header_match = re.search(header_pattern, table_html, re.DOTALL)
+        
+        headers = []
+        if header_match:
+            th_pattern = r'<th[^>]*>(.*?)</th>'
+            headers = re.findall(th_pattern, header_match.group(1), re.DOTALL)
+            headers = [re.sub(r'<[^>]+>', '', h).strip() for h in headers]
+        
+        # Cari index kolom yang dibutuhkan
+        idx_nik = -1
+        idx_kpj = -1
+        idx_nama = -1
+        
+        for i, h in enumerate(headers):
+            h_lower = h.lower()
+            if 'nomor identitas' in h_lower or 'nik' in h_lower:
+                idx_nik = i
+            elif 'kartu peserta' in h_lower or 'kpj' in h_lower:
+                idx_kpj = i
+            elif 'nama' in h_lower:
+                idx_nama = i
+        
+        # Ambil baris data
+        body_pattern = r'<tbody[^>]*>(.*?)</tbody>'
+        body_match = re.search(body_pattern, table_html, re.DOTALL)
+        
+        if body_match:
             row_pattern = r'<tr[^>]*>(.*?)</tr>'
-            rows = re.findall(row_pattern, table_html, re.DOTALL)
+            rows = re.findall(row_pattern, body_match.group(1), re.DOTALL)
             
-            if rows:
-                # Ambil header untuk mapping
-                header_row = rows[0] if rows else ""
-                header_pattern = r'<th[^>]*>(.*?)</th>'
-                headers = re.findall(header_pattern, header_row, re.DOTALL)
-                headers = [re.sub(r'<[^>]+>', '', h).strip().lower() for h in headers]
+            for row in rows:
+                cells = re.findall(r'<td[^>]*>(.*?)</td>', row, re.DOTALL)
+                cells_clean = [re.sub(r'<[^>]+>', '', c).strip() for c in cells]
                 
-                # Cari data di baris berikutnya
-                for row in rows[1:3]:  # Ambil beberapa baris pertama
-                    cells = re.findall(r'<td[^>]*>(.*?)</td>', row, re.DOTALL)
-                    cells_clean = [re.sub(r'<[^>]+>', '', c).strip() for c in cells]
+                if len(cells_clean) > max(idx_nik, idx_kpj, idx_nama):
+                    row_data = {}
+                    for i, cell in enumerate(cells_clean):
+                        if i < len(headers):
+                            row_data[headers[i]] = cell
                     
-                    if cells_clean:
-                        for i, cell in enumerate(cells_clean):
-                            if i < len(headers):
-                                data[headers[i]] = cell
-                        break
+                    # Simpan semua data
+                    for key, val in row_data.items():
+                        data[key] = val
         
         return data
 
-    def _extract_form_data(self, html):
-        """Extract data from form di halaman input-tk-nik-step1"""
-        data = {}
+    def check_kpj(self, kpj: str) -> dict:
+        """Cek KPJ dan ambil data (NIK, Nama, Tanggal Lahir)"""
+        logger.info(f"Mengecek KPJ: {kpj}")
         
-        # Extract NIK
-        nik_pattern = r'name=["\']nik["\'][^>]*value=["\']([^"\']+)["\']'
-        nik_match = re.search(nik_pattern, html)
-        if nik_match:
-            data['nik'] = nik_match.group(1)
-        
-        # Extract Nama
-        nama_pattern = r'name=["\']nama["\'][^>]*value=["\']([^"\']+)["\']'
-        nama_match = re.search(nama_pattern, html)
-        if nama_match:
-            data['nama'] = nama_match.group(1)
-        
-        # Extract Tanggal Lahir
-        tgl_pattern = r'name=["\']tanggal_lahir["\'][^>]*value=["\']([^"\']+)["\']'
-        tgl_match = re.search(tgl_pattern, html)
-        if tgl_match:
-            data['tanggal_lahir'] = tgl_match.group(1)
-        
-        # Extract Jenis Kelamin
-        jk_pattern = r'name=["\']jenis_kelamin["\'][^>]*>.*?<option[^>]*selected[^>]*value=["\']([^"\']+)["\']'
-        jk_match = re.search(jk_pattern, html, re.DOTALL)
-        if jk_match:
-            data['jenis_kelamin'] = jk_match.group(1)
-        
-        # Extract Alamat
-        alamat_pattern = r'name=["\']alamat["\'][^>]*value=["\']([^"\']+)["\']'
-        alamat_match = re.search(alamat_pattern, html)
-        if alamat_match:
-            data['alamat'] = alamat_match.group(1)
-        
-        return data
-
-    def login(self) -> dict:
-        """Login: Buka token URL -> Buka step3"""
-        logger.info("Memulai login...")
-        
-        try:
-            # Step 1: Buka token URL
-            logger.info("Step 1: Membuka token URL...")
-            self._wait()
-            resp1 = self.session.get(self.token_url, headers=self._get_headers(), timeout=30, allow_redirects=True)
-            logger.info(f"Token URL Status: {resp1.status_code}")
-            
-            # Step 2: Buka step3
-            logger.info("Step 2: Membuka step3...")
-            self._wait()
-            resp2 = self.session.get(self.step3_url, headers=self._get_headers(self.step3_url), timeout=30)
-            logger.info(f"Step3 Status: {resp2.status_code}")
-            
-            # Extract CSRF token
-            self.csrf_token = self._extract_csrf(resp2.text)
-            
-            if self.csrf_token:
-                self.is_logged_in = True
-                return {"status": "SUCCESS", "message": "Login berhasil!", "csrf": self.csrf_token[:30] + "..."}
-            else:
-                return {"status": "ERROR", "message": "CSRF token tidak ditemukan"}
-                
-        except Exception as e:
-            logger.error(f"Login error: {e}")
-            return {"status": "ERROR", "message": str(e)}
-
-    def cek_kpj(self, kpj: str) -> dict:
-        """Cek KPJ dan ambil data dari berbagai sumber"""
-        if not self.is_logged_in:
-            login_result = self.login()
-            if login_result['status'] != 'SUCCESS':
-                return login_result
-
         self._wait()
-
+        
         try:
-            headers = {
-                **self._get_headers(self.step3_url),
-                'X-Requested-With': 'XMLHttpRequest',
-                'Content-Type': 'application/x-www-form-urlencoded',
-                'Origin': 'https://pom.bpjsketenagakerjaan.go.id',
-            }
-
-            payload = {
-                'kpj': kpj,
-                '_csrf': self.csrf_token
-            }
-
-            # Step 1: Kirim KPJ
-            logger.info(f"Mengirim KPJ: {kpj}")
-            response = self.session.post(self.check_url, data=payload, headers=headers, timeout=60)
-
-            if response.status_code == 429:
-                time.sleep(10)
-                return self.cek_kpj(kpj)
-
+            headers = self._get_headers()
+            
+            # POST request ke endpoint check
+            response = self.session.post(
+                self.check_url,
+                data={'kpj': kpj},
+                headers=headers,
+                cookies=self.cookies,
+                timeout=60
+            )
+            
+            logger.info(f"Response Status: {response.status_code}")
+            
             if response.status_code == 200:
                 try:
                     data = response.json()
-                    msg = data.get('msg', '').lower()
                     
-                    if 'brute' in msg:
-                        time.sleep(10)
-                        return {"status": "ERROR", "message": "Terlalu banyak request"}
-
                     if data.get('ret') == '0':
-                        logger.info("KPJ valid, mengambil data...")
+                        logger.info("KPJ valid, mengambil data dari tabel...")
                         
-                        personal_data = {"kpj": kpj, "status": "VALID"}
-                        
-                        # Method 1: Coba ambil dari input-tk-nik-step1
-                        self._wait()
-                        form_response = self.session.get(
-                            self.input_tk_step1_url, 
-                            headers=self._get_headers(self.step3_url), 
-                            timeout=30
-                        )
-                        
-                        if form_response.status_code == 200:
-                            form_data = self._extract_form_data(form_response.text)
-                            personal_data.update(form_data)
-                            logger.info(f"Data dari form: {form_data}")
-                        
-                        # Method 2: Coba ambil dari getListTk
-                        self._wait()
-                        list_headers = {
-                            **self._get_headers(self.step3_url),
-                            'X-Requested-With': 'XMLHttpRequest',
-                        }
-                        list_response = self.session.get(
-                            self.get_list_tk_url,
-                            headers=list_headers,
-                            timeout=30
-                        )
-                        
-                        if list_response.status_code == 200:
-                            try:
-                                list_data = list_response.json()
-                                if list_data.get('ret') == '0':
-                                    for item in list_data.get('data', []):
-                                        if item.get('kpj') == kpj:
-                                            if item.get('nik'):
-                                                personal_data['nik'] = item.get('nik')
-                                            if item.get('namaLengkap'):
-                                                personal_data['nama'] = item.get('namaLengkap')
-                                            if item.get('nama'):
-                                                personal_data['nama'] = item.get('nama')
-                                            if item.get('tanggalLahir'):
-                                                personal_data['tanggal_lahir'] = item.get('tanggalLahir')
-                                            if item.get('alamat'):
-                                                personal_data['alamat'] = item.get('alamat')
-                                            break
-                            except:
-                                pass
-                        
-                        # Method 3: Coba ambil dari tabel di step3
+                        # Ambil data dari step3
                         self._wait()
                         step3_response = self.session.get(
                             self.step3_url,
-                            headers=self._get_headers(self.step3_url),
+                            headers=headers,
+                            cookies=self.cookies,
                             timeout=30
                         )
                         
                         if step3_response.status_code == 200:
                             table_data = self._extract_from_table(step3_response.text)
-                            if table_data:
-                                # Map field names
+                            
+                            # Format hasil
+                            result = {
+                                "status": "SUCCESS",
+                                "message": "Data ditemukan!",
+                                "data": {
+                                    "nik": table_data.get('Nomor Identitas', ''),
+                                    "nama": table_data.get('Nama', ''),
+                                    "kpj": kpj,
+                                    "tanggal_lahir": table_data.get('Tanggal Lahir', ''),
+                                    "jenis_kelamin": table_data.get('Jenis Kelamin', ''),
+                                    "alamat": table_data.get('Alamat', ''),
+                                    "status": "VALID"
+                                }
+                            }
+                            
+                            # Coba ambil dari field lain jika kosong
+                            if not result['data']['nik']:
                                 for key, val in table_data.items():
-                                    if 'nik' in key or 'identitas' in key:
-                                        personal_data['nik'] = val
-                                    elif 'nama' in key:
-                                        personal_data['nama'] = val
-                                    elif 'tanggal' in key or 'tgl' in key:
-                                        personal_data['tanggal_lahir'] = val
-                                    elif 'alamat' in key:
-                                        personal_data['alamat'] = val
+                                    if 'nik' in key.lower():
+                                        result['data']['nik'] = val
+                                    elif 'nama' in key.lower():
+                                        result['data']['nama'] = val
+                                    elif 'tanggal' in key.lower() or 'tgl' in key.lower():
+                                        result['data']['tanggal_lahir'] = val
+                            
+                            return result
+                        else:
+                            return {"status": "ERROR", "message": "Gagal mengambil halaman data"}
+                    else:
+                        return {"status": "ERROR", "message": data.get('msg', 'KPJ tidak valid')}
                         
-                        logger.info(f"Final data: {json.dumps(personal_data, indent=2)}")
-                        
-                        return {
-                            "status": "SUCCESS", 
-                            "message": "Data ditemukan!",
-                            "data": personal_data
-                        }
-
-                    if data.get('ret') == '-1':
-                        self.is_logged_in = False
-                        return self.login()
-
-                    return {"status": "ERROR", "message": data.get('msg', 'KPJ tidak valid')}
-                    
-                except json.JSONDecodeError as e:
-                    logger.error(f"JSON Error: {e}")
-                    return {"status": "ERROR", "message": f"Response error: {response.text[:100]}"}
-                    
-            return {"status": "ERROR", "message": f"HTTP {response.status_code}"}
-
+                except json.JSONDecodeError:
+                    return {"status": "ERROR", "message": "Response error"}
+            else:
+                return {"status": "ERROR", "message": f"HTTP {response.status_code}"}
+                
         except Exception as e:
             logger.error(f"Error: {e}")
             return {"status": "ERROR", "message": str(e)}
 
 
-scraper = POMScraper()
+scraper = POMDataScraper()
 
 
 # HTML Template
@@ -306,7 +201,7 @@ HTML_TEMPLATE = '''
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>POM BPJS - Cek KPJ</title>
+    <title>POM BPJS - Ambil Data KPJ</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -315,15 +210,15 @@ HTML_TEMPLATE = '''
             min-height: 100vh;
             padding: 20px;
         }
-        .container { max-width: 600px; margin: 0 auto; }
-        .card {
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
             background: white;
             border-radius: 20px;
             padding: 25px;
-            margin-bottom: 20px;
             box-shadow: 0 10px 40px rgba(0,0,0,0.2);
         }
-        h1 { text-align: center; color: #333; margin-bottom: 5px; font-size: 24px; }
+        h1 { text-align: center; color: #333; margin-bottom: 5px; }
         .sub { text-align: center; color: #666; margin-bottom: 25px; font-size: 13px; }
         
         .status {
@@ -333,35 +228,33 @@ HTML_TEMPLATE = '''
             margin-bottom: 20px;
             font-weight: bold;
         }
-        .status-red { background: #f8d7da; color: #721c24; }
         .status-green { background: #d4edda; color: #155724; }
+        .status-red { background: #f8d7da; color: #721c24; }
         .status-yellow { background: #fff3cd; color: #856404; }
-        
-        button {
-            width: 100%;
-            padding: 14px;
-            font-size: 16px;
-            font-weight: bold;
-            border: none;
-            border-radius: 10px;
-            cursor: pointer;
-            margin-bottom: 15px;
-        }
-        .btn-login { background: #28a745; color: white; }
-        .btn-check { background: #667eea; color: white; }
-        button:disabled { opacity: 0.6; cursor: not-allowed; }
         
         input {
             width: 100%;
-            padding: 12px;
+            padding: 14px;
             font-size: 16px;
             border: 2px solid #ddd;
             border-radius: 10px;
             text-align: center;
             letter-spacing: 2px;
             margin-bottom: 15px;
-            box-sizing: border-box;
         }
+        
+        button {
+            width: 100%;
+            padding: 14px;
+            font-size: 16px;
+            font-weight: bold;
+            background: #28a745;
+            color: white;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+        }
+        button:disabled { opacity: 0.6; cursor: not-allowed; }
         
         .result {
             margin-top: 20px;
@@ -371,12 +264,24 @@ HTML_TEMPLATE = '''
             display: none;
         }
         .result.show { display: block; }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+        }
+        td {
+            padding: 10px;
+            border-bottom: 1px solid #ddd;
+        }
+        td:first-child {
+            font-weight: bold;
+            width: 35%;
+            background: #f0f0f0;
+        }
+        
         .success { background: #d4edda; color: #155724; padding: 10px; border-radius: 8px; margin-bottom: 15px; }
         .error { background: #f8d7da; color: #721c24; padding: 10px; border-radius: 8px; margin-bottom: 15px; }
-        
-        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-        td { padding: 10px; border-bottom: 1px solid #ddd; }
-        td:first-child { font-weight: bold; width: 35%; background: #f0f0f0; }
         
         .log {
             background: #1a1a2e;
@@ -385,44 +290,34 @@ HTML_TEMPLATE = '''
             border-radius: 8px;
             font-family: monospace;
             font-size: 10px;
-            max-height: 200px;
+            max-height: 150px;
             overflow-y: auto;
             margin-top: 15px;
         }
         .log p { margin: 3px 0; }
-        hr { margin: 20px 0; border: none; border-top: 1px solid #ddd; }
     </style>
 </head>
 <body>
     <div class="container">
-        <div class="card">
-            <h1>🔍 POM BPJS - Cek KPJ</h1>
-            <div class="sub">Buka Token → Step3 → Cek KPJ</div>
-            
-            <div id="status" class="status status-yellow">⏳ Belum login</div>
-            
-            <button id="loginBtn" class="btn-login" onclick="doLogin()">🔑 BUKA TOKEN & STEP3</button>
-            
-            <hr>
-            
-            <input type="text" id="kpj" maxlength="11" placeholder="Masukkan KPJ (11 digit)" autocomplete="off">
-            <button id="checkBtn" class="btn-check" onclick="doCheck()" disabled>🔍 CEK KPJ</button>
-            
-            <div id="result" class="result">
-                <h4>📊 Hasil</h4>
-                <div id="resultContent"></div>
-            </div>
-            
-            <div id="log" class="log">
-                <p>📋 Klik tombol untuk memulai...</p>
-                <p>📌 Alur: Token URL → Step3 → Cek KPJ</p>
-            </div>
+        <h1>🔍 POM BPJS - Ambil Data KPJ</h1>
+        <div class="sub">Ambil NIK, Nama, Tanggal Lahir, dll</div>
+        
+        <div id="status" class="status status-yellow">⏳ Siap</div>
+        
+        <input type="text" id="kpj" maxlength="11" placeholder="Masukkan KPJ (11 digit)" autocomplete="off">
+        <button id="checkBtn" onclick="checkKPJ()">🔍 CEK & AMBIL DATA</button>
+        
+        <div id="result" class="result">
+            <h4>📊 Hasil</h4>
+            <div id="resultContent"></div>
+        </div>
+        
+        <div id="log" class="log">
+            <p>📋 Masukkan KPJ dan klik tombol di atas...</p>
         </div>
     </div>
 
     <script>
-        let isLoggedIn = false;
-        
         function addLog(msg, isError = false) {
             const logDiv = document.getElementById('log');
             const time = new Date().toLocaleTimeString();
@@ -431,98 +326,27 @@ HTML_TEMPLATE = '''
             logDiv.scrollTop = logDiv.scrollHeight;
         }
         
-        function updateStatus(message, statusType) {
+        function updateStatus(message, type) {
             const statusDiv = document.getElementById('status');
             statusDiv.innerHTML = message;
-            if (statusType === 'success') {
+            if (type === 'success') {
                 statusDiv.className = 'status status-green';
-            } else if (statusType === 'loading') {
-                statusDiv.className = 'status status-yellow';
-            } else {
+            } else if (type === 'error') {
                 statusDiv.className = 'status status-red';
-            }
-        }
-        
-        function showResult(data) {
-            const resultDiv = document.getElementById('result');
-            const contentDiv = document.getElementById('resultContent');
-            
-            if (data.status === 'SUCCESS') {
-                let html = '<div class="success">✅ Data Ditemukan!</div>';
-                if (data.data) {
-                    html += '<table>';
-                    const fields = [
-                        {key: 'nik', label: 'NIK'},
-                        {key: 'nama', label: 'Nama'},
-                        {key: 'kpj', label: 'KPJ'},
-                        {key: 'tanggal_lahir', label: 'Tanggal Lahir'},
-                        {key: 'jenis_kelamin', label: 'Jenis Kelamin'},
-                        {key: 'alamat', label: 'Alamat'},
-                        {key: 'status', label: 'Status'}
-                    ];
-                    for (const field of fields) {
-                        if (data.data[field.key]) {
-                            html += `<tr><td style="font-weight: bold">${field.label}</td><td>${escapeHtml(String(data.data[field.key]))}</td></tr>`;
-                        }
-                    }
-                    html += '</table>';
-                }
-                contentDiv.innerHTML = html;
             } else {
-                contentDiv.innerHTML = `<div class="error">❌ ${escapeHtml(data.message || 'Error')}</div>`;
-            }
-            resultDiv.classList.add('show');
-        }
-        
-        function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
-        }
-        
-        async function doLogin() {
-            const btn = document.getElementById('loginBtn');
-            const checkBtn = document.getElementById('checkBtn');
-            
-            btn.disabled = true;
-            updateStatus('Login... (Token → Step3)', 'loading');
-            addLog('🚀 Membuka token URL...');
-            
-            try {
-                const res = await fetch('/login', { method: 'POST' });
-                const data = await res.json();
-                addLog(`Response: ${JSON.stringify(data)}`);
-                
-                if (data.status === 'SUCCESS') {
-                    isLoggedIn = true;
-                    updateStatus('✅ Login berhasil!', 'success');
-                    checkBtn.disabled = false;
-                    addLog('✅ Login sukses!');
-                } else {
-                    updateStatus('❌ Login gagal', 'error');
-                    addLog(`❌ Gagal: ${data.message}`, true);
-                }
-            } catch (err) {
-                addLog(`❌ Error: ${err.message}`, true);
-                updateStatus('Error: ' + err.message, 'error');
-            } finally {
-                btn.disabled = false;
+                statusDiv.className = 'status status-yellow';
             }
         }
         
-        async function doCheck() {
-            if (!isLoggedIn) {
-                alert('Login dulu!');
-                return;
-            }
-            
+        async function checkKPJ() {
             const kpj = document.getElementById('kpj').value.trim();
+            const btn = document.getElementById('checkBtn');
+            
             if (!kpj || !/^\\d{11}$/.test(kpj)) {
                 alert('Masukkan KPJ 11 digit angka!');
                 return;
             }
             
-            const btn = document.getElementById('checkBtn');
             btn.disabled = true;
             btn.innerHTML = '⏳ MENCARI...';
             updateStatus('Mencari data...', 'loading');
@@ -534,18 +358,60 @@ HTML_TEMPLATE = '''
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ kpj: kpj })
                 });
+                
                 const data = await res.json();
                 addLog(`Response: ${JSON.stringify(data)}`);
-                showResult(data);
-                updateStatus(data.status === 'SUCCESS' ? '✅ Data ditemukan' : '❌ ' + data.message, data.status === 'SUCCESS' ? 'success' : 'error');
+                
+                if (data.status === 'SUCCESS') {
+                    updateStatus('✅ Data ditemukan!', 'success');
+                    
+                    let html = '<div class="success">✅ Data Ditemukan!</div>';
+                    html += '<table>';
+                    
+                    const fields = [
+                        {key: 'nik', label: 'NIK'},
+                        {key: 'nama', label: 'Nama'},
+                        {key: 'kpj', label: 'KPJ'},
+                        {key: 'tanggal_lahir', label: 'Tanggal Lahir'},
+                        {key: 'jenis_kelamin', label: 'Jenis Kelamin'},
+                        {key: 'alamat', label: 'Alamat'},
+                        {key: 'status', label: 'Status'}
+                    ];
+                    
+                    for (const field of fields) {
+                        if (data.data[field.key]) {
+                            html += `<td><td style="font-weight: bold">${field.label}</td><td>${escapeHtml(String(data.data[field.key]))}</td></tr>`;
+                        }
+                    }
+                    
+                    html += '\\u003c/table>';
+                    document.getElementById('resultContent').innerHTML = html;
+                    document.getElementById('result').classList.add('show');
+                    addLog('✅ Data berhasil diambil');
+                } else {
+                    updateStatus('❌ ' + data.message, 'error');
+                    document.getElementById('resultContent').innerHTML = `<div class="error">❌ ${escapeHtml(data.message)}</div>`;
+                    document.getElementById('result').classList.add('show');
+                    addLog(`❌ ${data.message}`, true);
+                }
             } catch (err) {
                 addLog(`❌ Error: ${err.message}`, true);
-                showResult({ status: 'ERROR', message: err.message });
+                updateStatus('Error: ' + err.message, 'error');
             } finally {
                 btn.disabled = false;
-                btn.innerHTML = '🔍 CEK KPJ';
+                btn.innerHTML = '🔍 CEK & AMBIL DATA';
             }
         }
+        
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+        
+        document.getElementById('kpj').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') checkKPJ();
+        });
     </script>
 </body>
 </html>
@@ -557,12 +423,6 @@ def index():
     return render_template_string(HTML_TEMPLATE)
 
 
-@app.route('/login', methods=['POST'])
-def login():
-    result = scraper.login()
-    return jsonify(result)
-
-
 @app.route('/check', methods=['POST'])
 def check():
     data = request.get_json()
@@ -571,14 +431,14 @@ def check():
     if not kpj or len(kpj) != 11 or not kpj.isdigit():
         return jsonify({"status": "ERROR", "message": "KPJ harus 11 digit angka!"})
     
-    result = scraper.cek_kpj(kpj)
+    result = scraper.check_kpj(kpj)
     return jsonify(result)
 
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     print("="*50)
-    print("🔍 POM BPJS - Cek KPJ")
+    print("🔍 POM BPJS - Ambil Data KPJ")
     print(f"📱 Buka: http://localhost:{port}")
     print("="*50)
     app.run(debug=False, host='0.0.0.0', port=port)
