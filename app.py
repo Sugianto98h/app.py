@@ -1,83 +1,138 @@
 from flask import Flask, request, jsonify, render_template_string
 import requests
-import logging
+import json
 import os
+import logging
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-class POMBot:
+class POMDataFinder:
     def __init__(self):
-        self.token_url = "https://pom.bpjsketenagakerjaan.go.id/pu/login?t=YTliOWM0OGNjMGExYWVlOTUyZGU2YTg5MjExNDk0YmFkYWZhOTQ0MzJkODZmZGUwYTY5OTNjMTUwMDI4MzIjMQ=="
         self.step3_url = "https://pom.bpjsketenagakerjaan.go.id/pu/step3"
+        self.check_url = "https://pom.bpjsketenagakerjaan.go.id/pu/prosesHapusTkAll"
+        
         self.session = requests.Session()
-        self.token_opened = False
-        self.step3_opened = False
+        
+        # COOKIE SESSION YANG VALID (dari browser)
+        self.cookies = {
+            'BIGipServerPOM_PUBLIK.app~POM_PUBLIK_pool': '!bzHFEKiCm9566ujniNkIKL0LQO8PDT4V1meh8znNFq7BIsYsOt/ZcmFPliFPJB9HfkzlFp1sGQYfR8L7J6aVmOmnu2uYZdbUxkHYRQ5Pog',
+            'connect.sid': 's%3AVUIfl_td4CZ8KSFhG7D0uCw_xQ4CayLw.swa4SZgv5kgKM4wqoPn25Pk9n8psTd%2Bfvl8l64xb1nU',
+            '_csrf': 'HO4coKDS5PTPdSxyTwrCG8j7',
+            'TS01859485': '011e8ab0a054c9118e5b34144f9c46d632b8e416c91366b253434a891ef77f24ef69af885168098a11b4c208dd787181b5e76d7078896a78ffa814e5b07a6251b979f33765ed1617ea7e980441036bb53d8c8c359a4abbbfc7962dadf10393e5a5187096a3'
+        }
         
         self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'id-ID,id;q=0.9,en;q=0.8',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/json, text/plain, */*',
+            'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Referer': self.step3_url,
+            'Origin': 'https://pom.bpjsketenagakerjaan.go.id',
+            'X-Requested-With': 'XMLHttpRequest',
+            'Connection': 'keep-alive',
         }
+        
+        self.is_connected = False
 
-    def buka_token(self) -> dict:
-        """Tugas 1: Buka token URL"""
-        logger.info("="*50)
-        logger.info("TUGAS 1: Membuka token URL...")
-        logger.info(f"URL: {self.token_url}")
+    def test_connection(self) -> dict:
+        """Test koneksi dengan cookie yang ada"""
+        logger.info("Menguji koneksi ke POM...")
         
         try:
-            response = self.session.get(self.token_url, headers=self.headers, timeout=30, allow_redirects=True)
+            # Coba akses step3 dengan cookie
+            response = self.session.get(self.step3_url, headers=self.headers, cookies=self.cookies, timeout=30)
             
-            logger.info(f"Status: {response.status_code}")
-            logger.info(f"Final URL: {response.url}")
+            logger.info(f"Step3 Status: {response.status_code}")
             
             if response.status_code == 200:
-                self.token_opened = True
-                return {"status": "SUCCESS", "message": "Token berhasil dibuka!", "final_url": response.url}
+                # Cek apakah response JSON error atau HTML
+                if response.text.startswith('{'):
+                    try:
+                        data = response.json()
+                        if data.get('ret') == '-1':
+                            return {"status": "ERROR", "message": f"Session tidak valid: {data.get('msg')}"}
+                    except:
+                        pass
+                
+                self.is_connected = True
+                logger.info("✅ Koneksi berhasil!")
+                return {"status": "SUCCESS", "message": "Terhubung ke POM dengan cookie valid!"}
             else:
-                return {"status": "ERROR", "message": f"Token gagal dibuka (HTTP {response.status_code})", "final_url": response.url}
+                return {"status": "ERROR", "message": f"Gagal akses step3 (HTTP {response.status_code})"}
                 
         except Exception as e:
             logger.error(f"Error: {e}")
             return {"status": "ERROR", "message": str(e)}
 
-    def buka_step3(self) -> dict:
-        """Tugas 2: Buka step3"""
-        logger.info("="*50)
-        logger.info("TUGAS 2: Membuka step3...")
-        logger.info(f"URL: {self.step3_url}")
+    def cari_data(self, kpj: str) -> dict:
+        """Cari data berdasarkan KPJ"""
+        logger.info(f"Mencari data KPJ: {kpj}")
+        
+        if not self.is_connected:
+            test = self.test_connection()
+            if test['status'] != 'SUCCESS':
+                return test
         
         try:
-            response = self.session.get(self.step3_url, headers=self.headers, timeout=30)
+            # Siapkan payload
+            payload = {'kpj': kpj}
             
-            logger.info(f"Status: {response.status_code}")
-            logger.info(f"Response: {response.text[:200]}")
+            # Kirim request dengan cookie
+            response = self.session.post(
+                self.check_url, 
+                data=payload, 
+                headers=self.headers, 
+                cookies=self.cookies,
+                timeout=30
+            )
+            
+            logger.info(f"Response Status: {response.status_code}")
+            logger.info(f"Response Body: {response.text[:300]}")
             
             if response.status_code == 200:
-                self.step3_opened = True
-                return {"status": "SUCCESS", "message": "Step3 berhasil dibuka!", "response": response.text[:500]}
+                try:
+                    data = response.json()
+                    
+                    if data.get('ret') == '0':
+                        result_data = data.get('data', [])
+                        
+                        if result_data and len(result_data) > 0:
+                            personal = result_data[0]
+                            return {
+                                "status": "SUCCESS",
+                                "message": "Data ditemukan!",
+                                "data": personal,
+                                "raw": data
+                            }
+                        else:
+                            return {"status": "ERROR", "message": "Data kosong"}
+                    else:
+                        return {"status": "ERROR", "message": data.get('msg', 'KPJ tidak valid atau tidak ditemukan')}
+                        
+                except json.JSONDecodeError:
+                    return {"status": "ERROR", "message": f"Response bukan JSON: {response.text[:100]}"}
             else:
-                return {"status": "ERROR", "message": f"Step3 gagal dibuka (HTTP {response.status_code})", "response": response.text[:200]}
+                return {"status": "ERROR", "message": f"HTTP {response.status_code}"}
                 
         except Exception as e:
             logger.error(f"Error: {e}")
             return {"status": "ERROR", "message": str(e)}
 
 
-bot = POMBot()
+# Inisialisasi
+finder = POMDataFinder()
 
 
 # HTML Template
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
-<html>
+<html lang="id">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>POM BPJS - Token Opener</title>
+    <title>POM BPJS - Cari Data KPJ</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -87,7 +142,7 @@ HTML_TEMPLATE = '''
             padding: 20px;
         }
         .container {
-            max-width: 600px;
+            max-width: 700px;
             margin: 0 auto;
         }
         .card {
@@ -129,9 +184,20 @@ HTML_TEMPLATE = '''
             cursor: pointer;
             margin-bottom: 15px;
         }
-        .btn-token { background: #28a745; color: white; }
-        .btn-step3 { background: #17a2b8; color: white; }
+        .btn-test { background: #28a745; color: white; }
+        .btn-search { background: #667eea; color: white; }
         button:disabled { opacity: 0.6; cursor: not-allowed; }
+        input {
+            width: 100%;
+            padding: 12px;
+            font-size: 16px;
+            border: 2px solid #ddd;
+            border-radius: 10px;
+            text-align: center;
+            letter-spacing: 2px;
+            margin-bottom: 15px;
+            box-sizing: border-box;
+        }
         .result {
             margin-top: 20px;
             padding: 15px;
@@ -140,8 +206,8 @@ HTML_TEMPLATE = '''
             display: none;
         }
         .result.show { display: block; }
-        .success { background: #d4edda; color: #155724; padding: 10px; border-radius: 8px; }
-        .error { background: #f8d7da; color: #721c24; padding: 10px; border-radius: 8px; }
+        .success { background: #d4edda; color: #155724; padding: 10px; border-radius: 8px; margin-bottom: 15px; }
+        .error { background: #f8d7da; color: #721c24; padding: 10px; border-radius: 8px; margin-bottom: 15px; }
         pre {
             background: #2d2d2d;
             color: #f8f8f2;
@@ -150,7 +216,21 @@ HTML_TEMPLATE = '''
             overflow-x: auto;
             font-size: 11px;
             white-space: pre-wrap;
-            max-height: 200px;
+            max-height: 300px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+        }
+        td {
+            padding: 10px;
+            border-bottom: 1px solid #ddd;
+        }
+        td:first-child {
+            font-weight: bold;
+            width: 35%;
+            background: #f0f0f0;
         }
         .log {
             background: #1a1a2e;
@@ -169,59 +249,59 @@ HTML_TEMPLATE = '''
             border: none;
             border-top: 1px solid #ddd;
         }
-        .iframe-container {
-            margin-top: 20px;
-            border: 1px solid #ddd;
-            border-radius: 10px;
-            overflow: hidden;
-        }
-        iframe {
-            width: 100%;
-            height: 400px;
-            border: none;
-        }
-        .link-info {
+        .cookie-info {
+            background: #e7f3ff;
+            padding: 10px;
+            border-radius: 8px;
             font-size: 11px;
-            color: #666;
             word-break: break-all;
-            margin-top: 5px;
+            margin-top: 15px;
+        }
+        .cookie-info summary {
+            cursor: pointer;
+            font-weight: bold;
+            color: #0066cc;
         }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="card">
-            <h1>🏦 POM BPJS Opener</h1>
-            <div class="sub">Buka Token → Buka Step3</div>
+            <h1>🔍 POM BPJS - Cari Data KPJ</h1>
+            <div class="sub">Cari data peserta berdasarkan Nomor KPJ (Session Sudah Termasuk Cookie)</div>
             
-            <div id="statusToken" class="status status-red">❌ Token: Belum dibuka</div>
-            <div id="statusStep3" class="status status-red">❌ Step3: Belum dibuka</div>
+            <div id="status" class="status status-yellow">⏳ Belum diuji</div>
             
-            <button id="tokenBtn" class="btn-token" onclick="bukaToken()">1️⃣ BUKA TOKEN</button>
-            <button id="step3Btn" class="btn-step3" onclick="bukaStep3()" disabled>2️⃣ BUKA STEP3</button>
+            <button id="testBtn" class="btn-test" onclick="doTest()">🔌 UJI KONEKSI</button>
+            
+            <hr>
+            
+            <h3 style="margin-bottom: 15px;">📝 Cari Data KPJ</h3>
+            <input type="text" id="kpj" maxlength="11" placeholder="Masukkan KPJ (11 digit)" autocomplete="off">
+            <button id="searchBtn" class="btn-search" onclick="doSearch()" disabled>🔍 CARI DATA</button>
             
             <div id="result" class="result">
-                <h4>📋 Hasil</h4>
+                <h4>📊 Hasil Pencarian</h4>
                 <div id="resultContent"></div>
             </div>
             
             <div id="log" class="log">
-                <p>📋 Klik tombol di atas...</p>
+                <p>📋 Klik tombol "UJI KONEKSI" untuk mulai...</p>
             </div>
-        </div>
-        
-        <!-- Jika token berhasil, tampilkan iframe step3 -->
-        <div id="iframeContainer" class="card" style="display: none;">
-            <h3>🌐 Halaman Step3</h3>
-            <div class="iframe-container">
-                <iframe id="step3Frame" src="about:blank"></iframe>
-            </div>
-            <div class="link-info" id="step3Url"></div>
+            
+            <details class="cookie-info">
+                <summary>🔐 Cookie Session (Tersimpan di Kode)</summary>
+                <p style="margin-top: 8px;">✅ BIGipServerPOM_PUBLIK_pool<br>
+                ✅ connect.sid<br>
+                ✅ _csrf<br>
+                ✅ TS01859485</p>
+                <p style="font-size: 10px; color: #666; margin-top: 8px;">Cookie sudah disertakan dalam setiap request</p>
+            </details>
         </div>
     </div>
 
     <script>
-        let tokenOpened = false;
+        let isConnected = false;
         
         function addLog(msg, isError = false) {
             const logDiv = document.getElementById('log');
@@ -231,101 +311,154 @@ HTML_TEMPLATE = '''
             logDiv.scrollTop = logDiv.scrollHeight;
         }
         
-        function updateStatus(elementId, message, isSuccess) {
-            const el = document.getElementById(elementId);
-            if (isSuccess) {
-                el.innerHTML = '✅ ' + message;
-                el.className = 'status status-green';
+        function updateStatus(message, statusType) {
+            const statusDiv = document.getElementById('status');
+            statusDiv.innerHTML = message;
+            if (statusType === 'success') {
+                statusDiv.className = 'status status-green';
+            } else if (statusType === 'loading') {
+                statusDiv.className = 'status status-yellow';
             } else {
-                el.innerHTML = '❌ ' + message;
-                el.className = 'status status-red';
+                statusDiv.className = 'status status-red';
             }
         }
         
-        function showResult(type, content) {
+        function showResult(type, content, data = null) {
             const resultDiv = document.getElementById('result');
             const contentDiv = document.getElementById('resultContent');
             
-            if (type === 'success') {
-                contentDiv.innerHTML = `<div class="success">✅ ${content}</div>`;
+            if (type === 'success' && data) {
+                let html = '<div class="success">✅ Data Ditemukan!</div>';
+                html += '<table>';
+                
+                const fieldLabels = {
+                    'nik': 'NIK',
+                    'nomorIdentitas': 'NIK',
+                    'namaLengkap': 'Nama Lengkap',
+                    'nama': 'Nama',
+                    'kpj': 'KPJ',
+                    'nomUpah': 'Gaji / Upah',
+                    'gaji': 'Gaji',
+                    'tanggalLahir': 'Tanggal Lahir',
+                    'tglLahir': 'Tanggal Lahir',
+                    'jenisKelamin': 'Jenis Kelamin',
+                    'statusKawin': 'Status Kawin',
+                    'alamat': 'Alamat',
+                    'kodePos': 'Kode Pos',
+                    'hp': 'Nomor HP',
+                    'email': 'Email'
+                };
+                
+                let found = false;
+                for (const [key, value] of Object.entries(data)) {
+                    if (fieldLabels[key] || key.toLowerCase().includes('nama') || key.toLowerCase().includes('nik') || key.toLowerCase().includes('kpj')) {
+                        found = true;
+                        const label = fieldLabels[key] || key;
+                        html += `<tr><td style="font-weight: bold">${label}</td><td>${escapeHtml(String(value))}</td></tr>`;
+                    }
+                }
+                
+                if (!found) {
+                    html += `<tr><td colspan="2">${escapeHtml(JSON.stringify(data, null, 2))}</td></tr>`;
+                }
+                html += '\\u003c/table>';
+                contentDiv.innerHTML = html;
+            } else if (type === 'success') {
+                contentDiv.innerHTML = `<div class="success">✅ ${escapeHtml(content)}</div>`;
             } else {
-                contentDiv.innerHTML = `<div class="error">❌ ${content}</div>`;
+                contentDiv.innerHTML = `<div class="error">❌ ${escapeHtml(content)}</div>`;
             }
+            
             resultDiv.classList.add('show');
         }
         
-        async function bukaToken() {
-            const btn = document.getElementById('tokenBtn');
-            const step3Btn = document.getElementById('step3Btn');
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+        
+        async function doTest() {
+            const btn = document.getElementById('testBtn');
+            const searchBtn = document.getElementById('searchBtn');
             
             btn.disabled = true;
-            updateStatus('statusToken', 'Membuka token...', false);
-            addLog('🚀 Membuka token URL...');
+            updateStatus('Menguji koneksi...', 'loading');
+            addLog('🚀 Menguji koneksi ke POM dengan cookie...');
             
             try {
-                const res = await fetch('/buka-token', { method: 'POST' });
+                const res = await fetch('/test', { method: 'POST' });
                 const data = await res.json();
                 addLog(`Response: ${JSON.stringify(data)}`);
                 
                 if (data.status === 'SUCCESS') {
-                    tokenOpened = true;
-                    updateStatus('statusToken', 'Token berhasil dibuka!', true);
-                    step3Btn.disabled = false;
-                    showResult('success', 'Token berhasil dibuka! Sekarang klik "BUKA STEP3"');
-                    addLog('✅ Token berhasil dibuka');
+                    isConnected = true;
+                    updateStatus('✅ Terhubung ke POM!', 'success');
+                    searchBtn.disabled = false;
+                    showResult('success', data.message);
+                    addLog('✅ Koneksi berhasil! Cookie valid.');
                 } else {
-                    updateStatus('statusToken', 'Token gagal dibuka', false);
+                    updateStatus('❌ Gagal terhubung', 'error');
                     showResult('error', data.message);
                     addLog(`❌ Gagal: ${data.message}`, true);
                 }
             } catch (err) {
                 addLog(`❌ Error: ${err.message}`, true);
-                updateStatus('statusToken', 'Error: ' + err.message, false);
+                updateStatus('Error: ' + err.message, 'error');
                 showResult('error', err.message);
             } finally {
                 btn.disabled = false;
             }
         }
         
-        async function bukaStep3() {
-            if (!tokenOpened) {
-                alert('Buka token dulu!');
+        async function doSearch() {
+            if (!isConnected) {
+                alert('Uji koneksi dulu!');
                 return;
             }
             
-            const btn = document.getElementById('step3Btn');
+            const kpj = document.getElementById('kpj').value.trim();
+            if (!kpj || !/^\\d{11}$/.test(kpj)) {
+                alert('Masukkan KPJ yang valid (11 digit angka)!');
+                return;
+            }
+            
+            const btn = document.getElementById('searchBtn');
             btn.disabled = true;
-            updateStatus('statusStep3', 'Membuka step3...', false);
-            addLog('🚀 Membuka step3...');
+            updateStatus('Mencari data...', 'loading');
+            addLog(`🔍 Mencari data KPJ: ${kpj}`);
             
             try {
-                const res = await fetch('/buka-step3', { method: 'POST' });
+                const res = await fetch('/cari', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ kpj: kpj })
+                });
+                
                 const data = await res.json();
                 addLog(`Response: ${JSON.stringify(data)}`);
                 
                 if (data.status === 'SUCCESS') {
-                    updateStatus('statusStep3', 'Step3 berhasil dibuka!', true);
-                    showResult('success', 'Step3 berhasil dibuka!');
-                    addLog('✅ Step3 berhasil dibuka');
-                    
-                    // Tampilkan iframe dengan step3
-                    const step3Url = 'https://pom.bpjsketenagakerjaan.go.id/pu/step3';
-                    document.getElementById('step3Frame').src = step3Url;
-                    document.getElementById('step3Url').innerHTML = `🔗 ${step3Url}`;
-                    document.getElementById('iframeContainer').style.display = 'block';
+                    updateStatus('✅ Data ditemukan!', 'success');
+                    showResult('success', 'Data ditemukan!', data.data);
+                    addLog('✅ Data berhasil ditemukan');
                 } else {
-                    updateStatus('statusStep3', 'Step3 gagal dibuka', false);
+                    updateStatus('❌ Data tidak ditemukan', 'error');
                     showResult('error', data.message);
-                    addLog(`❌ Gagal: ${data.message}`, true);
+                    addLog(`❌ ${data.message}`, true);
                 }
             } catch (err) {
                 addLog(`❌ Error: ${err.message}`, true);
-                updateStatus('statusStep3', 'Error: ' + err.message, false);
+                updateStatus('Error: ' + err.message, 'error');
                 showResult('error', err.message);
             } finally {
                 btn.disabled = false;
             }
         }
+        
+        document.getElementById('kpj').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter' && isConnected) doSearch();
+        });
     </script>
 </body>
 </html>
@@ -337,22 +470,30 @@ def index():
     return render_template_string(HTML_TEMPLATE)
 
 
-@app.route('/buka-token', methods=['POST'])
-def buka_token():
-    result = bot.buka_token()
+@app.route('/test', methods=['POST'])
+def test():
+    """Test koneksi dengan cookie yang sudah disimpan"""
+    result = finder.test_connection()
     return jsonify(result)
 
 
-@app.route('/buka-step3', methods=['POST'])
-def buka_step3():
-    result = bot.buka_step3()
+@app.route('/cari', methods=['POST'])
+def cari():
+    """Cari data berdasarkan KPJ"""
+    data = request.get_json()
+    kpj = data.get('kpj', '').strip()
+    
+    if not kpj or len(kpj) != 11 or not kpj.isdigit():
+        return jsonify({"status": "ERROR", "message": "KPJ harus 11 digit angka!"})
+    
+    result = finder.cari_data(kpj)
     return jsonify(result)
 
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     print("="*50)
-    print("POM BPJS Opener")
-    print(f"Buka: http://localhost:{port}")
+    print("🔍 POM BPJS - Cari Data KPJ")
+    print(f"📱 Buka: http://localhost:{port}")
     print("="*50)
     app.run(debug=False, host='0.0.0.0', port=port)
