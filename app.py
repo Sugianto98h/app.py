@@ -89,44 +89,55 @@ class POMScraper:
             return {"status": "ERROR", "message": str(e)}
 
     def cek_kpj(self, kpj: str) -> dict:
-        """Cek KPJ"""
-        if not self.is_logged_in:
-            login_result = self.login()
-            if login_result['status'] != 'SUCCESS':
-                return login_result
-        
-        self._wait()
-        
-        try:
-            headers = {
-                **self._get_headers(self.step3_url),
-                'X-Requested-With': 'XMLHttpRequest',
-                'Content-Type': 'application/x-www-form-urlencoded',
-                'Origin': 'https://pom.bpjsketenagakerjaan.go.id',
-            }
-            
-            payload = f'kpj={kpj}'
-            if self.csrf_token:
-                payload += f'&_csrf={self.csrf_token}'
-            
-            response = self.session.post(self.check_url, data=payload, headers=headers, timeout=60)
-            
-            if response.status_code == 200:
-                try:
-                    data = response.json()
-                    if data.get('ret') == '0':
-                        result_data = data.get('data', [])
-                        if result_data and len(result_data) > 0:
-                            return {"status": "SUCCESS", "data": result_data[0]}
-                    return {"status": "ERROR", "message": data.get('msg', 'KPJ tidak valid')}
-                except:
-                    return {"status": "ERROR", "message": "Response error"}
-            return {"status": "ERROR", "message": f"HTTP {response.status_code}"}
-            
-        except Exception as e:
-            return {"status": "ERROR", "message": str(e)}
+    if not self.is_logged_in:
+        login_result = self.login()
+        if login_result['status'] != 'SUCCESS':
+            return login_result
 
+    self._wait()
 
+    try:
+        headers = {
+            **self._get_headers(self.step3_url),
+            'X-Requested-With': 'XMLHttpRequest',
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Origin': 'https://pom.bpjsketenagakerjaan.go.id',
+            'X-CSRF-Token': self.csrf_token
+        }
+
+        payload = {
+            'kpj': kpj,
+            '_csrf': self.csrf_token
+        }
+
+        response = self.session.post(self.check_url, data=payload, headers=headers, timeout=60)
+
+        if response.status_code == 429:
+            time.sleep(10)
+            return self.cek_kpj(kpj)
+
+        if response.status_code == 200:
+            data = response.json()
+            msg = data.get('msg', '').lower()
+
+            if 'brute' in msg:
+                time.sleep(10)
+                return {"status": "ERROR", "message": "Terlalu banyak request"}
+
+            if data.get('ret') == '0':
+                return {"status": "SUCCESS", "data": data.get('data', [])[0]}
+
+            if data.get('ret') == '-1':
+                self.is_logged_in = False
+                return self.login()
+
+            return {"status": "ERROR", "message": data.get('msg')}
+
+        return {"status": "ERROR", "message": f"HTTP {response.status_code}"}
+
+    except Exception as e:
+        return {"status": "ERROR", "message": str(e)}
+        
 scraper = POMScraper()
 
 
