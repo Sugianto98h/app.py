@@ -3,6 +3,7 @@ import requests
 import json
 import os
 import logging
+import time
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -16,7 +17,7 @@ class POMDataFinder:
         
         self.session = requests.Session()
         
-        # COOKIE SESSION YANG VALID (dari browser)
+        # COOKIE SESSION YANG VALID
         self.cookies = {
             'BIGipServerPOM_PUBLIK.app~POM_PUBLIK_pool': '!bzHFEKiCm9566ujniNkIKL0LQO8PDT4V1meh8znNFq7BIsYsOt/ZcmFPliFPJB9HfkzlFp1sGQYfR8L7J6aVmOmnu2uYZdbUxkHYRQ5Pog',
             'connect.sid': 's%3AVUIfl_td4CZ8KSFhG7D0uCw_xQ4CayLw.swa4SZgv5kgKM4wqoPn25Pk9n8psTd%2Bfvl8l64xb1nU',
@@ -41,13 +42,11 @@ class POMDataFinder:
         logger.info("Menguji koneksi ke POM...")
         
         try:
-            # Coba akses step3 dengan cookie
             response = self.session.get(self.step3_url, headers=self.headers, cookies=self.cookies, timeout=30)
             
             logger.info(f"Step3 Status: {response.status_code}")
             
             if response.status_code == 200:
-                # Cek apakah response JSON error atau HTML
                 if response.text.startswith('{'):
                     try:
                         data = response.json()
@@ -57,7 +56,6 @@ class POMDataFinder:
                         pass
                 
                 self.is_connected = True
-                logger.info("✅ Koneksi berhasil!")
                 return {"status": "SUCCESS", "message": "Terhubung ke POM dengan cookie valid!"}
             else:
                 return {"status": "ERROR", "message": f"Gagal akses step3 (HTTP {response.status_code})"}
@@ -66,9 +64,9 @@ class POMDataFinder:
             logger.error(f"Error: {e}")
             return {"status": "ERROR", "message": str(e)}
 
-    def cari_data(self, kpj: str) -> dict:
-        """Cari data berdasarkan KPJ"""
-        logger.info(f"Mencari data KPJ: {kpj}")
+    def cari_data(self, kpj: str, retry: int = 0) -> dict:
+        """Cari data berdasarkan KPJ dengan retry mechanism"""
+        logger.info(f"Mencari data KPJ: {kpj} (percobaan ke-{retry+1})")
         
         if not self.is_connected:
             test = self.test_connection()
@@ -79,17 +77,16 @@ class POMDataFinder:
             # Siapkan payload
             payload = {'kpj': kpj}
             
-            # Kirim request dengan cookie
+            # Timeout lebih panjang (60 detik)
             response = self.session.post(
                 self.check_url, 
                 data=payload, 
                 headers=self.headers, 
                 cookies=self.cookies,
-                timeout=30
+                timeout=60
             )
             
             logger.info(f"Response Status: {response.status_code}")
-            logger.info(f"Response Body: {response.text[:300]}")
             
             if response.status_code == 200:
                 try:
@@ -116,6 +113,12 @@ class POMDataFinder:
             else:
                 return {"status": "ERROR", "message": f"HTTP {response.status_code}"}
                 
+        except requests.exceptions.Timeout:
+            logger.warning(f"Timeout untuk KPJ: {kpj}")
+            if retry < 2:  # Maksimal 3 percobaan
+                time.sleep(3)  # Tunggu 3 detik sebelum retry
+                return self.cari_data(kpj, retry + 1)
+            return {"status": "ERROR", "message": "Request timeout setelah 3 kali percobaan. Server POM lambat merespon."}
         except Exception as e:
             logger.error(f"Error: {e}")
             return {"status": "ERROR", "message": str(e)}
@@ -208,16 +211,7 @@ HTML_TEMPLATE = '''
         .result.show { display: block; }
         .success { background: #d4edda; color: #155724; padding: 10px; border-radius: 8px; margin-bottom: 15px; }
         .error { background: #f8d7da; color: #721c24; padding: 10px; border-radius: 8px; margin-bottom: 15px; }
-        pre {
-            background: #2d2d2d;
-            color: #f8f8f2;
-            padding: 10px;
-            border-radius: 8px;
-            overflow-x: auto;
-            font-size: 11px;
-            white-space: pre-wrap;
-            max-height: 300px;
-        }
+        .warning { background: #fff3cd; color: #856404; padding: 10px; border-radius: 8px; margin-bottom: 15px; }
         table {
             width: 100%;
             border-collapse: collapse;
@@ -239,7 +233,7 @@ HTML_TEMPLATE = '''
             border-radius: 8px;
             font-family: monospace;
             font-size: 10px;
-            max-height: 150px;
+            max-height: 200px;
             overflow-y: auto;
             margin-top: 15px;
         }
@@ -262,13 +256,27 @@ HTML_TEMPLATE = '''
             font-weight: bold;
             color: #0066cc;
         }
+        .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid #3498db;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-left: 10px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="card">
             <h1>🔍 POM BPJS - Cari Data KPJ</h1>
-            <div class="sub">Cari data peserta berdasarkan Nomor KPJ (Session Sudah Termasuk Cookie)</div>
+            <div class="sub">Cari data peserta berdasarkan Nomor KPJ</div>
             
             <div id="status" class="status status-yellow">⏳ Belum diuji</div>
             
@@ -287,26 +295,26 @@ HTML_TEMPLATE = '''
             
             <div id="log" class="log">
                 <p>📋 Klik tombol "UJI KONEKSI" untuk mulai...</p>
+                <p>⚠️ Server POM kadang lambat, bisa sampai 60 detik.</p>
             </div>
             
             <details class="cookie-info">
                 <summary>🔐 Cookie Session (Tersimpan di Kode)</summary>
-                <p style="margin-top: 8px;">✅ BIGipServerPOM_PUBLIK_pool<br>
-                ✅ connect.sid<br>
-                ✅ _csrf<br>
-                ✅ TS01859485</p>
-                <p style="font-size: 10px; color: #666; margin-top: 8px;">Cookie sudah disertakan dalam setiap request</p>
+                <p style="margin-top: 8px;">✅ BIGipServerPOM_PUBLIK_pool<br>✅ connect.sid<br>✅ _csrf<br>✅ TS01859485</p>
             </details>
         </div>
     </div>
 
     <script>
         let isConnected = false;
+        let isSearching = false;
         
-        function addLog(msg, isError = false) {
+        function addLog(msg, isError = false, isWarning = false) {
             const logDiv = document.getElementById('log');
             const time = new Date().toLocaleTimeString();
-            const color = isError ? '#ff6b6b' : '#0f0';
+            let color = '#0f0';
+            if (isError) color = '#ff6b6b';
+            if (isWarning) color = '#ffaa00';
             logDiv.innerHTML += `<p style="color: ${color}">[${time}] ${msg}</p>`;
             logDiv.scrollTop = logDiv.scrollHeight;
         }
@@ -365,6 +373,8 @@ HTML_TEMPLATE = '''
                 contentDiv.innerHTML = html;
             } else if (type === 'success') {
                 contentDiv.innerHTML = `<div class="success">✅ ${escapeHtml(content)}</div>`;
+            } else if (type === 'warning') {
+                contentDiv.innerHTML = `<div class="warning">⚠️ ${escapeHtml(content)}</div>`;
             } else {
                 contentDiv.innerHTML = `<div class="error">❌ ${escapeHtml(content)}</div>`;
             }
@@ -417,6 +427,11 @@ HTML_TEMPLATE = '''
                 return;
             }
             
+            if (isSearching) {
+                addLog('⏳ Masih dalam proses pencarian...', false, true);
+                return;
+            }
+            
             const kpj = document.getElementById('kpj').value.trim();
             if (!kpj || !/^\\d{11}$/.test(kpj)) {
                 alert('Masukkan KPJ yang valid (11 digit angka)!');
@@ -424,17 +439,24 @@ HTML_TEMPLATE = '''
             }
             
             const btn = document.getElementById('searchBtn');
+            isSearching = true;
             btn.disabled = true;
-            updateStatus('Mencari data...', 'loading');
-            addLog(`🔍 Mencari data KPJ: ${kpj}`);
+            btn.innerHTML = '⏳ MENCARI... (maks 60 detik)';
+            updateStatus('Mencari data... (server POM lambat, harap tunggu)', 'loading');
+            addLog(`🔍 Mencari data KPJ: ${kpj} (timeout 60 detik, akan retry jika timeout)`);
             
             try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 65000);
+                
                 const res = await fetch('/cari', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ kpj: kpj })
+                    body: JSON.stringify({ kpj: kpj }),
+                    signal: controller.signal
                 });
                 
+                clearTimeout(timeoutId);
                 const data = await res.json();
                 addLog(`Response: ${JSON.stringify(data)}`);
                 
@@ -442,22 +464,32 @@ HTML_TEMPLATE = '''
                     updateStatus('✅ Data ditemukan!', 'success');
                     showResult('success', 'Data ditemukan!', data.data);
                     addLog('✅ Data berhasil ditemukan');
+                } else if (data.message.includes('timeout')) {
+                    updateStatus('⚠️ Timeout - Server lambat', 'error');
+                    showResult('warning', data.message);
+                    addLog(`⚠️ ${data.message}`, false, true);
                 } else {
                     updateStatus('❌ Data tidak ditemukan', 'error');
                     showResult('error', data.message);
                     addLog(`❌ ${data.message}`, true);
                 }
             } catch (err) {
-                addLog(`❌ Error: ${err.message}`, true);
-                updateStatus('Error: ' + err.message, 'error');
-                showResult('error', err.message);
+                if (err.name === 'AbortError') {
+                    addLog('⏰ Request dibatalkan karena timeout (65 detik)', true);
+                    showResult('warning', 'Request timeout. Server POM sangat lambat. Coba lagi nanti.');
+                } else {
+                    addLog(`❌ Error: ${err.message}`, true);
+                    showResult('error', err.message);
+                }
             } finally {
+                isSearching = false;
                 btn.disabled = false;
+                btn.innerHTML = '🔍 CARI DATA';
             }
         }
         
         document.getElementById('kpj').addEventListener('keypress', function(e) {
-            if (e.key === 'Enter' && isConnected) doSearch();
+            if (e.key === 'Enter' && isConnected && !isSearching) doSearch();
         });
     </script>
 </body>
@@ -472,14 +504,12 @@ def index():
 
 @app.route('/test', methods=['POST'])
 def test():
-    """Test koneksi dengan cookie yang sudah disimpan"""
     result = finder.test_connection()
     return jsonify(result)
 
 
 @app.route('/cari', methods=['POST'])
 def cari():
-    """Cari data berdasarkan KPJ"""
     data = request.get_json()
     kpj = data.get('kpj', '').strip()
     
@@ -495,5 +525,6 @@ if __name__ == '__main__':
     print("="*50)
     print("🔍 POM BPJS - Cari Data KPJ")
     print(f"📱 Buka: http://localhost:{port}")
+    print("⚠️  Server POM kadang lambat, timeout diatur 60 detik")
     print("="*50)
     app.run(debug=False, host='0.0.0.0', port=port)
