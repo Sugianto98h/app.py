@@ -13,7 +13,7 @@
             padding: 20px;
         }
         .container {
-            max-width: 900px;
+            max-width: 600px;
             margin: 0 auto;
             background: white;
             border-radius: 20px;
@@ -30,31 +30,19 @@
         .header p { opacity: 0.8; font-size: 14px; }
         .content { padding: 30px; }
         
-        .step {
+        .status-box {
             background: #f8f9fa;
             border-radius: 12px;
-            padding: 20px;
+            padding: 15px;
             margin-bottom: 20px;
-            border-left: 4px solid #667eea;
+            text-align: center;
         }
-        .step h3 { margin-bottom: 15px; color: #333; }
-        .step button {
-            width: auto;
-            padding: 10px 25px;
-            margin-bottom: 0;
-            margin-right: 10px;
-            display: inline-block;
+        .status-box .status {
+            font-size: 14px;
+            margin-top: 5px;
         }
-        .step .status {
-            display: inline-block;
-            padding: 8px 15px;
-            border-radius: 20px;
-            font-size: 12px;
-            margin-left: 10px;
-        }
-        .status-done { background: #d4edda; color: #155724; }
-        .status-pending { background: #fff3cd; color: #856404; }
-        .status-error { background: #f8d7da; color: #721c24; }
+        .connected { color: #155724; background: #d4edda; padding: 5px 10px; border-radius: 20px; display: inline-block; }
+        .disconnected { color: #721c24; background: #f8d7da; padding: 5px 10px; border-radius: 20px; display: inline-block; }
         
         .form-group { margin-bottom: 25px; }
         label { display: block; font-weight: 600; margin-bottom: 8px; color: #333; }
@@ -68,36 +56,34 @@
             letter-spacing: 2px;
         }
         input:focus { outline: none; border-color: #667eea; }
+        
         button {
-            padding: 12px 24px;
-            font-size: 16px;
+            width: 100%;
+            padding: 15px;
+            font-size: 18px;
             font-weight: bold;
             background: linear-gradient(135deg, #667eea, #764ba2);
             color: white;
             border: none;
             border-radius: 10px;
             cursor: pointer;
+            margin-bottom: 15px;
         }
         button:hover { transform: translateY(-2px); }
         button:disabled { opacity: 0.6; cursor: not-allowed; }
-        .btn-check {
-            width: 100%;
-            padding: 15px;
-            font-size: 18px;
-            margin-top: 10px;
+        
+        .btn-login {
+            background: linear-gradient(135deg, #28a745, #20c997);
         }
+        
         .result {
-            margin-top: 30px;
+            margin-top: 20px;
             padding: 20px;
             background: #f8f9fa;
             border-radius: 10px;
             display: none;
         }
-        .result.show { display: block; animation: fadeIn 0.5s; }
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(10px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
+        .result.show { display: block; }
         .result pre {
             background: #2d2d2d;
             color: #f8f8f2;
@@ -107,15 +93,23 @@
             font-size: 12px;
             white-space: pre-wrap;
         }
-        .info-token {
-            background: #e7f3ff;
-            padding: 10px;
-            border-radius: 8px;
-            font-size: 11px;
-            color: #0066cc;
-            margin-top: 20px;
-            word-break: break-all;
+        .success-message { background: #d4edda; color: #155724; padding: 12px; border-radius: 8px; margin-bottom: 15px; }
+        .error-message { background: #f8d7da; color: #721c24; padding: 12px; border-radius: 8px; margin-bottom: 15px; }
+        
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
         }
+        .data-table td {
+            padding: 10px;
+            border-bottom: 1px solid #e0e0e0;
+        }
+        .data-table td:first-child {
+            font-weight: bold;
+            width: 35%;
+            background: #f0f0f0;
+        }
+        
         .loading {
             display: none;
             text-align: center;
@@ -135,20 +129,6 @@
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
         }
-        .error-message {
-            background: #f8d7da;
-            color: #721c24;
-            padding: 12px;
-            border-radius: 8px;
-            margin-bottom: 15px;
-        }
-        .success-message {
-            background: #d4edda;
-            color: #155724;
-            padding: 12px;
-            border-radius: 8px;
-            margin-bottom: 15px;
-        }
     </style>
 </head>
 <body>
@@ -159,31 +139,18 @@
         </div>
         
         <div class="content">
-            <!-- STEP 1: Aktivasi Step4 -->
-            <div class="step">
-                <h3>Step 1: Aktivasi Session</h3>
-                <button id="step4Btn" onclick="activateStep4()">🔑 Buka Token (Step4)</button>
-                <span id="step4Status" class="status status-pending">Belum</span>
-                <p style="font-size: 12px; margin-top: 10px; color: #666;">Token akan membuka pom.bpjsketenagakerjaan.go.id/pu/step4</p>
+            <div class="status-box">
+                <div id="statusText" class="status disconnected">❌ Belum Login</div>
             </div>
             
-            <!-- STEP 2: Akses Step3 -->
-            <div class="step">
-                <h3>Step 2: Akses Step3</h3>
-                <button id="step3Btn" onclick="accessStep3()" disabled>🌐 Buka Step3</button>
-                <span id="step3Status" class="status status-pending">Belum</span>
-                <p style="font-size: 12px; margin-top: 10px; color: #666;">Setelah step4 aktif, buka step3 untuk mengambil CSRF token</p>
+            <button id="loginBtn" class="btn-login" onclick="doLogin()">🔑 LOGIN & AMBIL SESSION</button>
+            
+            <div class="form-group">
+                <label>📝 Nomor KPJ (11 digit)</label>
+                <input type="text" id="kpj" maxlength="11" placeholder="Contoh: 22119520694" autocomplete="off">
             </div>
             
-            <!-- STEP 3: Cek KPJ -->
-            <div class="step">
-                <h3>Step 3: Cek Data KPJ</h3>
-                <div class="form-group">
-                    <label>📝 Nomor KPJ (11 digit)</label>
-                    <input type="text" id="kpj" maxlength="11" placeholder="Contoh: 22119520694" autocomplete="off">
-                </div>
-                <button id="checkBtn" class="btn-check" onclick="checkKPJ()" disabled>🔍 CHECK KPJ</button>
-            </div>
+            <button id="checkBtn" onclick="checkKPJ()" disabled>🔍 CEK KPJ</button>
             
             <div class="loading" id="loading">
                 <div class="spinner"></div>
@@ -194,105 +161,52 @@
                 <h3>📊 Hasil Pengecekan</h3>
                 <div id="resultContent"></div>
             </div>
-            
-            <div class="info-token">
-                <strong>🔑 Token:</strong><br>
-                {{ token_preview }}
-            </div>
         </div>
     </div>
 
     <script>
-        let step4Activated = {{ 'true' if step4_activated else 'false' }};
-        let step3Accessible = {{ 'true' if step3_accessible else 'false' }};
+        let isLoggedIn = false;
         
-        function updateUI() {
-            const step4Btn = document.getElementById('step4Btn');
-            const step3Btn = document.getElementById('step3Btn');
-            const checkBtn = document.getElementById('checkBtn');
-            const step4Status = document.getElementById('step4Status');
-            const step3Status = document.getElementById('step3Status');
-            
-            if (step4Activated) {
-                step4Btn.disabled = true;
-                step4Status.className = 'status status-done';
-                step4Status.innerHTML = '✅ Selesai';
-                step3Btn.disabled = false;
-            } else {
-                step4Btn.disabled = false;
-                step4Status.className = 'status status-pending';
-                step4Status.innerHTML = 'Belum';
-                step3Btn.disabled = true;
-                checkBtn.disabled = true;
-            }
-            
-            if (step3Accessible) {
-                step3Btn.disabled = true;
-                step3Status.className = 'status status-done';
-                step3Status.innerHTML = '✅ Selesai';
-                checkBtn.disabled = false;
-            } else if (step4Activated) {
-                step3Status.className = 'status status-pending';
-                step3Status.innerHTML = 'Belum';
-                checkBtn.disabled = true;
-            }
-        }
-        
-        async function activateStep4() {
-            const btn = document.getElementById('step4Btn');
+        async function doLogin() {
+            const loginBtn = document.getElementById('loginBtn');
             const loading = document.getElementById('loading');
+            const statusText = document.getElementById('statusText');
             
-            btn.disabled = true;
+            loginBtn.disabled = true;
             loading.classList.add('show');
+            statusText.innerHTML = '⏳ Login...';
             
             try {
-                const response = await fetch('/activate-step4', { method: 'POST' });
+                const response = await fetch('/login', { method: 'POST' });
                 const data = await response.json();
                 
-                if (data.status === 'success') {
-                    step4Activated = true;
+                if (data.status === 'SUCCESS') {
+                    isLoggedIn = true;
+                    statusText.innerHTML = '✅ Login Berhasil! Siap cek KPJ.';
+                    statusText.className = 'status connected';
+                    document.getElementById('checkBtn').disabled = false;
                     showResult('success', data.message);
                 } else {
+                    statusText.innerHTML = '❌ Login Gagal';
+                    statusText.className = 'status disconnected';
                     showResult('error', data.message);
                 }
-                updateUI();
                 
             } catch (error) {
+                statusText.innerHTML = '❌ Error: ' + error.message;
                 showResult('error', 'Network error: ' + error.message);
             } finally {
-                btn.disabled = false;
-                loading.classList.remove('show');
-            }
-        }
-        
-        async function accessStep3() {
-            const btn = document.getElementById('step3Btn');
-            const loading = document.getElementById('loading');
-            
-            btn.disabled = true;
-            loading.classList.add('show');
-            
-            try {
-                const response = await fetch('/access-step3', { method: 'POST' });
-                const data = await response.json();
-                
-                if (data.status === 'success') {
-                    step3Accessible = true;
-                    showResult('success', data.message);
-                } else {
-                    showResult('error', data.message);
-                }
-                updateUI();
-                
-            } catch (error) {
-                showResult('error', 'Network error: ' + error.message);
-            } finally {
-                btn.disabled = false;
+                loginBtn.disabled = false;
                 loading.classList.remove('show');
             }
         }
         
         async function checkKPJ() {
+            if (!isLoggedIn) {
+                alert('Login dulu! Klik tombol LOGIN & AMBIL SESSION');
+                return;
+            }
+            
             const kpj = document.getElementById('kpj').value.trim();
             const checkBtn = document.getElementById('checkBtn');
             const loading = document.getElementById('loading');
@@ -315,7 +229,7 @@
                 const data = await response.json();
                 
                 if (data.status === 'SUCCESS') {
-                    showResult('success', JSON.stringify(data.data, null, 2));
+                    displayData(data.data);
                 } else {
                     showResult('error', data.message || JSON.stringify(data, null, 2));
                 }
@@ -328,16 +242,48 @@
             }
         }
         
-        function showResult(type, content) {
-            const resultDiv = document.getElementById('result');
+        function displayData(data) {
             const resultContent = document.getElementById('resultContent');
             
-            if (type === 'success') {
-                resultContent.innerHTML = `<div class="success-message">✅ ${escapeHtml(content)}</div>`;
+            if (data && typeof data === 'object') {
+                // Coba extract data dari response
+                let extractedData = data;
+                if (data.data && typeof data.data === 'object') {
+                    extractedData = data.data;
+                }
+                
+                let html = '<span class="success-message">✅ Data Ditemukan!</span>';
+                html += '<table class="data-table">';
+                
+                const fields = ['nik', 'namaLengkap', 'nama', 'kpj', 'nomorIdentitas', 'nomUpah', 'gaji', 'tanggalLahir', 'jenisKelamin', 'statusKawin', 'alamat'];
+                
+                for (const [key, value] of Object.entries(extractedData)) {
+                    if (fields.includes(key) || key.includes('nama') || key.includes('nik') || key.includes('kpj')) {
+                        let label = key;
+                        if (key === 'namaLengkap') label = 'Nama Lengkap';
+                        if (key === 'nomorIdentitas') label = 'NIK';
+                        if (key === 'nomUpah') label = 'Gaji';
+                        html += `<tr><td style="font-weight: bold">${label}</td><td>${escapeHtml(String(value))}</td></tr>`;
+                    }
+                }
+                
+                html += '赶</div>';
+                resultContent.innerHTML = html;
             } else {
-                resultContent.innerHTML = `<div class="error-message">❌ ${escapeHtml(content)}</div>`;
+                resultContent.innerHTML = `<pre>${escapeHtml(JSON.stringify(data, null, 2))}</pre>`;
             }
-            resultDiv.classList.add('show');
+            
+            document.getElementById('result').classList.add('show');
+        }
+        
+        function showResult(type, message) {
+            const resultContent = document.getElementById('resultContent');
+            if (type === 'success') {
+                resultContent.innerHTML = `<div class="success-message">✅ ${escapeHtml(message)}</div>`;
+            } else {
+                resultContent.innerHTML = `<div class="error-message">❌ ${escapeHtml(message)}</div>`;
+            }
+            document.getElementById('result').classList.add('show');
         }
         
         function escapeHtml(text) {
@@ -346,13 +292,9 @@
             return div.innerHTML;
         }
         
-        // Initialize
-        updateUI();
-        
-        // Enter key support
         document.getElementById('kpj').addEventListener('keypress', function(e) {
-            if (e.key === 'Enter' && step3Accessible) checkKPJ();
+            if (e.key === 'Enter' && isLoggedIn) checkKPJ();
         });
     </script>
 </body>
-    </html>
+</html>
