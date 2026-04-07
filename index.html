@@ -1,3 +1,168 @@
+from flask import Flask, render_template, request, jsonify
+from flask_cors import CORS
+import requests
+import re
+import json
+import os
+import logging
+import time
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+app = Flask(__name__)
+CORS(app)
+
+class POMScraper:
+    def __init__(self):
+        # LINK_1 dari kode WebView
+        self.link_1 = "https://pom.bpjsketenagakerjaan.go.id/pu/login?t=YTliOWM0OGNjMGExYWVlOTUyZGU2YTg5MjExNDk0YmFkYWZhOTQ0MzJkODZmZGUwYTY5OTNjMTUwMDI4MzIjMQ=="
+        
+        self.base_url = "https://pom.bpjsketenagakerjaan.go.id"
+        self.session = requests.Session()
+        self.csrf_token = None
+        self.is_ready = False
+        
+        self.headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'id-ID,id;q=0.9,en;q=0.8',
+        }
+
+    def full_login(self) -> dict:
+        """Login otomatis"""
+        logger.info("Memulai proses login otomatis...")
+        
+        try:
+            # Step 1: Buka LINK_1
+            logger.info(f"Membuka: {self.link_1}")
+            response = self.session.get(self.link_1, headers=self.headers, timeout=30, allow_redirects=True)
+            
+            logger.info(f"Status: {response.status_code}")
+            logger.info(f"Final URL: {response.url}")
+            
+            if response.status_code != 200:
+                return {"status": "ERROR", "message": f"Gagal buka LINK_1 (HTTP {response.status_code})"}
+            
+            # Extract CSRF token
+            csrf_pattern = r'name=["\']_csrf["\'][^>]*value=["\']([^"\']+)["\']'
+            match = re.search(csrf_pattern, response.text)
+            
+            if match:
+                self.csrf_token = match.group(1)
+                self.headers['Cookie'] = f'_csrf={self.csrf_token}'
+                logger.info(f"CSRF Token ditemukan: {self.csrf_token[:30]}...")
+            else:
+                logger.warning("CSRF token tidak ditemukan di response")
+            
+            # Step 2: Akses step3
+            logger.info("Mengakses step3...")
+            response2 = self.session.get(f'{self.base_url}/pu/step3', headers=self.headers, timeout=30)
+            
+            logger.info(f"Step3 Status: {response2.status_code}")
+            
+            if response2.status_code == 200:
+                # Extract CSRF lagi jika belum
+                if not self.csrf_token:
+                    match2 = re.search(csrf_pattern, response2.text)
+                    if match2:
+                        self.csrf_token = match2.group(1)
+                        self.headers['Cookie'] = f'_csrf={self.csrf_token}'
+                        logger.info(f"CSRF Token dari step3: {self.csrf_token[:30]}...")
+                
+                self.is_ready = True
+                return {"status": "SUCCESS", "message": "Login berhasil!", "csrf": self.csrf_token is not None}
+            else:
+                return {"status": "ERROR", "message": f"Gagal akses step3 (HTTP {response2.status_code})"}
+                
+        except Exception as e:
+            logger.error(f"Error: {e}")
+            return {"status": "ERROR", "message": str(e)}
+
+    def check_kpj(self, kpj: str) -> dict:
+        """Cek KPJ"""
+        if not self.is_ready:
+            login_result = self.full_login()
+            if login_result['status'] != 'SUCCESS':
+                return {"status": "ERROR", "message": "Login gagal: " + login_result.get('message', '')}
+        
+        try:
+            url = f'{self.base_url}/pu/prosesHapusTkAll'
+            payload = {'kpj': kpj}
+            
+            if self.csrf_token:
+                payload['_csrf'] = self.csrf_token
+            
+            headers = {**self.headers, 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded'}
+            
+            logger.info(f"POST ke: {url}")
+            logger.info(f"Payload: {payload}")
+            
+            response = self.session.post(url, data=payload, headers=headers, timeout=30)
+            
+            logger.info(f"Response Status: {response.status_code}")
+            logger.info(f"Response Body: {response.text[:200]}")
+            
+            if response.status_code == 200:
+                # Coba parse JSON
+                try:
+                    data = response.json()
+                    if data.get('ret') == '0':
+                        return {"status": "SUCCESS", "data": data}
+                    else:
+                        return {"status": "ERROR", "message": data.get('msg', 'KPJ tidak valid')}
+                except:
+                    pass
+                
+                # Cek teks response
+                if 'success' in response.text.lower() or 'berhasil' in response.text.lower():
+                    return {"status": "SUCCESS", "data": response.text[:500]}
+                
+                return {"status": "ERROR", "message": f"Response: {response.text[:200]}"}
+            else:
+                return {"status": "ERROR", "message": f"HTTP {response.status_code}"}
+                
+        except Exception as e:
+            logger.error(f"Error: {e}")
+            return {"status": "ERROR", "message": str(e)}
+
+
+scraper = POMScraper()
+
+
+@app.route('/')
+def index():
+    return render_template_string(HTML_TEMPLATE)
+
+
+@app.route('/login', methods=['POST'])
+def login():
+    result = scraper.full_login()
+    return jsonify(result)
+
+
+@app.route('/check', methods=['POST'])
+def check_kpj():
+    data = request.get_json()
+    kpj = data.get('kpj', '').strip()
+    
+    if not kpj or len(kpj) != 11 or not kpj.isdigit():
+        return jsonify({"status": "ERROR", "message": "KPJ harus 11 digit angka!"})
+    
+    result = scraper.check_kpj(kpj)
+    return jsonify(result)
+
+
+@app.route('/status')
+def status():
+    return jsonify({
+        "is_ready": scraper.is_ready,
+        "csrf_available": scraper.csrf_token is not None
+    })
+
+
+# HTML Template langsung di dalam file (biar ga perlu folder templates)
+HTML_TEMPLATE = '''
 <!DOCTYPE html>
 <html lang="id">
 <head>
@@ -37,12 +202,9 @@
             margin-bottom: 20px;
             text-align: center;
         }
-        .status-box .status {
-            font-size: 14px;
-            margin-top: 5px;
-        }
         .connected { color: #155724; background: #d4edda; padding: 5px 10px; border-radius: 20px; display: inline-block; }
         .disconnected { color: #721c24; background: #f8d7da; padding: 5px 10px; border-radius: 20px; display: inline-block; }
+        .loading-status { color: #856404; background: #fff3cd; padding: 5px 10px; border-radius: 20px; display: inline-block; }
         
         .form-group { margin-bottom: 25px; }
         label { display: block; font-weight: 600; margin-bottom: 8px; color: #333; }
@@ -83,7 +245,11 @@
             border-radius: 10px;
             display: none;
         }
-        .result.show { display: block; }
+        .result.show { display: block; animation: fadeIn 0.5s; }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
         .result pre {
             background: #2d2d2d;
             color: #f8f8f2;
@@ -129,6 +295,19 @@
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
         }
+        
+        .log-box {
+            background: #1a1a2e;
+            color: #0f0;
+            padding: 10px;
+            border-radius: 8px;
+            font-family: monospace;
+            font-size: 11px;
+            margin-top: 20px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        .log-box p { margin: 3px 0; }
     </style>
 </head>
 <body>
@@ -140,7 +319,7 @@
         
         <div class="content">
             <div class="status-box">
-                <div id="statusText" class="status disconnected">❌ Belum Login</div>
+                <div id="statusText" class="disconnected">❌ Belum Login</div>
             </div>
             
             <button id="loginBtn" class="btn-login" onclick="doLogin()">🔑 LOGIN & AMBIL SESSION</button>
@@ -161,11 +340,22 @@
                 <h3>📊 Hasil Pengecekan</h3>
                 <div id="resultContent"></div>
             </div>
+            
+            <div class="log-box" id="logBox">
+                <p>📋 Log akan muncul di sini...</p>
+            </div>
         </div>
     </div>
 
     <script>
         let isLoggedIn = false;
+        
+        function addLog(message) {
+            const logBox = document.getElementById('logBox');
+            const time = new Date().toLocaleTimeString();
+            logBox.innerHTML += `<p>[${time}] ${message}</p>`;
+            logBox.scrollTop = logBox.scrollHeight;
+        }
         
         async function doLogin() {
             const loginBtn = document.getElementById('loginBtn');
@@ -175,24 +365,31 @@
             loginBtn.disabled = true;
             loading.classList.add('show');
             statusText.innerHTML = '⏳ Login...';
+            statusText.className = 'loading-status';
+            addLog('Memulai login...');
             
             try {
+                addLog('Mengirim request ke /login...');
                 const response = await fetch('/login', { method: 'POST' });
                 const data = await response.json();
+                addLog(`Response: ${JSON.stringify(data)}`);
                 
                 if (data.status === 'SUCCESS') {
                     isLoggedIn = true;
                     statusText.innerHTML = '✅ Login Berhasil! Siap cek KPJ.';
-                    statusText.className = 'status connected';
+                    statusText.className = 'connected';
                     document.getElementById('checkBtn').disabled = false;
+                    addLog('✅ Login berhasil!');
                     showResult('success', data.message);
                 } else {
                     statusText.innerHTML = '❌ Login Gagal';
-                    statusText.className = 'status disconnected';
+                    statusText.className = 'disconnected';
+                    addLog(`❌ Login gagal: ${data.message}`);
                     showResult('error', data.message);
                 }
                 
             } catch (error) {
+                addLog(`❌ Error: ${error.message}`);
                 statusText.innerHTML = '❌ Error: ' + error.message;
                 showResult('error', 'Network error: ' + error.message);
             } finally {
@@ -211,13 +408,19 @@
             const checkBtn = document.getElementById('checkBtn');
             const loading = document.getElementById('loading');
             
-            if (!kpj || !/^\d{11}$/.test(kpj)) {
-                alert('Masukkan KPJ 11 digit angka!');
+            if (!kpj) {
+                alert('Masukkan nomor KPJ!');
+                return;
+            }
+            
+            if (!/^\\d{11}$/.test(kpj)) {
+                alert('KPJ harus 11 digit angka!');
                 return;
             }
             
             checkBtn.disabled = true;
             loading.classList.add('show');
+            addLog(`Mengecek KPJ: ${kpj}...`);
             
             try {
                 const response = await fetch('/check', {
@@ -227,14 +430,18 @@
                 });
                 
                 const data = await response.json();
+                addLog(`Response check: ${JSON.stringify(data)}`);
                 
                 if (data.status === 'SUCCESS') {
+                    addLog('✅ Data ditemukan!');
                     displayData(data.data);
                 } else {
+                    addLog(`❌ Gagal: ${data.message}`);
                     showResult('error', data.message || JSON.stringify(data, null, 2));
                 }
                 
             } catch (error) {
+                addLog(`❌ Error: ${error.message}`);
                 showResult('error', 'Network error: ' + error.message);
             } finally {
                 checkBtn.disabled = false;
@@ -245,34 +452,45 @@
         function displayData(data) {
             const resultContent = document.getElementById('resultContent');
             
-            if (data && typeof data === 'object') {
-                // Coba extract data dari response
-                let extractedData = data;
-                if (data.data && typeof data.data === 'object') {
-                    extractedData = data.data;
-                }
-                
-                let html = '<span class="success-message">✅ Data Ditemukan!</span>';
-                html += '<table class="data-table">';
-                
-                const fields = ['nik', 'namaLengkap', 'nama', 'kpj', 'nomorIdentitas', 'nomUpah', 'gaji', 'tanggalLahir', 'jenisKelamin', 'statusKawin', 'alamat'];
-                
-                for (const [key, value] of Object.entries(extractedData)) {
-                    if (fields.includes(key) || key.includes('nama') || key.includes('nik') || key.includes('kpj')) {
-                        let label = key;
-                        if (key === 'namaLengkap') label = 'Nama Lengkap';
-                        if (key === 'nomorIdentitas') label = 'NIK';
-                        if (key === 'nomUpah') label = 'Gaji';
-                        html += `<tr><td style="font-weight: bold">${label}</td><td>${escapeHtml(String(value))}</td></tr>`;
-                    }
-                }
-                
-                html += '赶</div>';
-                resultContent.innerHTML = html;
-            } else {
-                resultContent.innerHTML = `<pre>${escapeHtml(JSON.stringify(data, null, 2))}</pre>`;
+            let extractedData = data;
+            if (data && data.data && typeof data.data === 'object') {
+                extractedData = data.data;
             }
             
+            let html = '<span class="success-message">✅ Data Ditemukan!</span>';
+            html += '<table class="data-table">';
+            
+            // Field yang umum
+            const fieldMap = {
+                'nik': 'NIK',
+                'nomorIdentitas': 'NIK',
+                'namaLengkap': 'Nama Lengkap',
+                'nama': 'Nama',
+                'kpj': 'KPJ',
+                'nomUpah': 'Gaji',
+                'gaji': 'Gaji',
+                'tanggalLahir': 'Tanggal Lahir',
+                'tglLahir': 'Tanggal Lahir',
+                'jenisKelamin': 'Jenis Kelamin',
+                'statusKawin': 'Status Kawin',
+                'alamat': 'Alamat'
+            };
+            
+            let found = false;
+            for (const [key, value] of Object.entries(extractedData)) {
+                if (fieldMap[key] || key.toLowerCase().includes('nama') || key.toLowerCase().includes('nik') || key.toLowerCase().includes('kpj')) {
+                    found = true;
+                    const label = fieldMap[key] || key;
+                    html += `<tr><td style="font-weight: bold">${label}</td><td>${escapeHtml(String(value))}</td></tr>`;
+                }
+            }
+            
+            if (!found) {
+                html += `<tr><td colspan="2">${escapeHtml(JSON.stringify(extractedData, null, 2))}</td></tr>`;
+            }
+            
+            html += '</table>';
+            resultContent.innerHTML = html;
             document.getElementById('result').classList.add('show');
         }
         
@@ -298,3 +516,13 @@
     </script>
 </body>
 </html>
+'''
+
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    print("="*50)
+    print("POM BPJS Scraper Started!")
+    print(f"Open: http://localhost:{port}")
+    print("="*50)
+    app.run(debug=False, host='0.0.0.0', port=port)
