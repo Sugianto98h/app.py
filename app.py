@@ -22,6 +22,7 @@ class POMScraper:
         self.token_url = "https://pom.bpjsketenagakerjaan.go.id/pu/login?t=YTliOWM0OGNjMGExYWVlOTUyZGU2YTg5MjExNDk0YmFkYWZhOTQ0MzJkODZmZGUwYTY5OTNjMTUwMDI4MzIjMQ=="
         self.step3_url = "https://pom.bpjsketenagakerjaan.go.id/pu/step3"
         self.check_url = "https://pom.bpjsketenagakerjaan.go.id/pu/prosesPendaftaranTkKPJ"
+        self.input_tk_step1_url = "https://pom.bpjsketenagakerjaan.go.id/pu/input-tk-nik-step1"
         
         self.session = requests.Session()
         self.csrf_token = None
@@ -57,6 +58,42 @@ class POMScraper:
                 return match.group(1)
         return None
 
+    def _extract_form_data(self, html):
+        """Extract data from form di halaman input-tk-nik-step1"""
+        data = {}
+        
+        # Extract NIK
+        nik_pattern = r'name=["\']nik["\'][^>]*value=["\']([^"\']+)["\']'
+        nik_match = re.search(nik_pattern, html)
+        if nik_match:
+            data['nik'] = nik_match.group(1)
+        
+        # Extract Nama
+        nama_pattern = r'name=["\']nama["\'][^>]*value=["\']([^"\']+)["\']'
+        nama_match = re.search(nama_pattern, html)
+        if nama_match:
+            data['nama'] = nama_match.group(1)
+        
+        # Extract Tanggal Lahir
+        tgl_pattern = r'name=["\']tanggal_lahir["\'][^>]*value=["\']([^"\']+)["\']'
+        tgl_match = re.search(tgl_pattern, html)
+        if tgl_match:
+            data['tanggal_lahir'] = tgl_match.group(1)
+        
+        # Extract Jenis Kelamin (dari select)
+        jk_pattern = r'name=["\']jenis_kelamin["\'][^>]*>.*?<option[^>]*selected[^>]*value=["\']([^"\']+)["\']'
+        jk_match = re.search(jk_pattern, html, re.DOTALL)
+        if jk_match:
+            data['jenis_kelamin'] = jk_match.group(1)
+        
+        # Extract Alamat
+        alamat_pattern = r'name=["\']alamat["\'][^>]*value=["\']([^"\']+)["\']'
+        alamat_match = re.search(alamat_pattern, html)
+        if alamat_match:
+            data['alamat'] = alamat_match.group(1)
+        
+        return data
+
     def login(self) -> dict:
         """Login: Buka token URL -> Buka step3"""
         logger.info("Memulai login...")
@@ -67,7 +104,6 @@ class POMScraper:
             self._wait()
             resp1 = self.session.get(self.token_url, headers=self._get_headers(), timeout=30, allow_redirects=True)
             logger.info(f"Token URL Status: {resp1.status_code}")
-            logger.info(f"Redirect ke: {resp1.url}")
             
             # Step 2: Buka step3
             logger.info("Step 2: Membuka step3...")
@@ -75,7 +111,7 @@ class POMScraper:
             resp2 = self.session.get(self.step3_url, headers=self._get_headers(self.step3_url), timeout=30)
             logger.info(f"Step3 Status: {resp2.status_code}")
             
-            # Extract CSRF token dari step3
+            # Extract CSRF token
             self.csrf_token = self._extract_csrf(resp2.text)
             
             if self.csrf_token:
@@ -89,7 +125,7 @@ class POMScraper:
             return {"status": "ERROR", "message": str(e)}
 
     def cek_kpj(self, kpj: str) -> dict:
-        """Cek KPJ"""
+        """Cek KPJ dan ambil data dari input-tk-nik-step1"""
         if not self.is_logged_in:
             login_result = self.login()
             if login_result['status'] != 'SUCCESS':
@@ -103,7 +139,6 @@ class POMScraper:
                 'X-Requested-With': 'XMLHttpRequest',
                 'Content-Type': 'application/x-www-form-urlencoded',
                 'Origin': 'https://pom.bpjsketenagakerjaan.go.id',
-                'X-CSRF-Token': self.csrf_token
             }
 
             payload = {
@@ -111,6 +146,8 @@ class POMScraper:
                 '_csrf': self.csrf_token
             }
 
+            # Step 1: Kirim KPJ
+            logger.info(f"Mengirim KPJ: {kpj}")
             response = self.session.post(self.check_url, data=payload, headers=headers, timeout=60)
 
             if response.status_code == 429:
@@ -118,35 +155,64 @@ class POMScraper:
                 return self.cek_kpj(kpj)
 
             if response.status_code == 200:
-                data = response.json()
-                msg = data.get('msg', '').lower()
+                try:
+                    data = response.json()
+                    msg = data.get('msg', '').lower()
+                    
+                    if 'brute' in msg:
+                        time.sleep(10)
+                        return {"status": "ERROR", "message": "Terlalu banyak request"}
 
-                if 'brute' in msg:
-                    time.sleep(10)
-                    return {"status": "ERROR", "message": "Terlalu banyak request"}
+                    if data.get('ret') == '0':
+                        logger.info("KPJ valid, mengambil data dari input-tk-nik-step1...")
+                        
+                        # Step 2: Ambil data dari halaman input-tk-nik-step1
+                        self._wait()
+                        form_response = self.session.get(
+                            self.input_tk_step1_url, 
+                            headers=self._get_headers(self.step3_url), 
+                            timeout=30
+                        )
+                        
+                        logger.info(f"Input-tk-nik-step1 Status: {form_response.status_code}")
+                        
+                        if form_response.status_code == 200:
+                            # Extract data dari form HTML
+                            personal_data = self._extract_form_data(form_response.text)
+                            personal_data['kpj'] = kpj
+                            personal_data['status'] = 'VALID'
+                            
+                            logger.info(f"Data ditemukan: {json.dumps(personal_data, indent=2)}")
+                            
+                            return {
+                                "status": "SUCCESS", 
+                                "message": "Data ditemukan!",
+                                "data": personal_data
+                            }
+                        else:
+                            return {"status": "ERROR", "message": f"Gagal mengambil form data (HTTP {form_response.status_code})"}
 
-                if data.get('ret') == '0':
-                    result_data = data.get('data', [])
-                    if result_data and len(result_data) > 0:
-                        return {"status": "SUCCESS", "data": result_data[0]}
-                    return {"status": "SUCCESS", "data": data}
+                    if data.get('ret') == '-1':
+                        self.is_logged_in = False
+                        return self.login()
 
-                if data.get('ret') == '-1':
-                    self.is_logged_in = False
-                    return self.login()
-
-                return {"status": "ERROR", "message": data.get('msg', 'KPJ tidak valid')}
-
+                    return {"status": "ERROR", "message": data.get('msg', 'KPJ tidak valid')}
+                    
+                except json.JSONDecodeError as e:
+                    logger.error(f"JSON Error: {e}")
+                    return {"status": "ERROR", "message": f"Response error: {response.text[:100]}"}
+                    
             return {"status": "ERROR", "message": f"HTTP {response.status_code}"}
 
         except Exception as e:
+            logger.error(f"Error: {e}")
             return {"status": "ERROR", "message": str(e)}
 
 
 scraper = POMScraper()
 
 
-# HTML Template
+# HTML Template (sama seperti sebelumnya)
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
 <html lang="id">
@@ -244,7 +310,7 @@ HTML_TEMPLATE = '''
     <div class="container">
         <div class="card">
             <h1>🔍 POM BPJS - Cek KPJ</h1>
-            <div class="sub">Buka Token → Step3 → Cek KPJ</div>
+            <div class="sub">Buka Token → Step3 → Cek KPJ → Ambil Data</div>
             
             <div id="status" class="status status-yellow">⏳ Belum login</div>
             
@@ -262,7 +328,7 @@ HTML_TEMPLATE = '''
             
             <div id="log" class="log">
                 <p>📋 Klik tombol untuk memulai...</p>
-                <p>📌 Alur: Token URL → Step3 → Cek KPJ</p>
+                <p>📌 Alur: Token URL → Step3 → Cek KPJ → Ambil data dari input-tk-nik-step1</p>
             </div>
         </div>
     </div>
@@ -304,6 +370,9 @@ HTML_TEMPLATE = '''
                             if (key === 'nik') label = 'NIK';
                             if (key === 'nama') label = 'Nama';
                             if (key === 'kpj') label = 'KPJ';
+                            if (key === 'tanggal_lahir') label = 'Tanggal Lahir';
+                            if (key === 'jenis_kelamin') label = 'Jenis Kelamin';
+                            if (key === 'alamat') label = 'Alamat';
                             html += `<td><td style="font-weight: bold">${label}</td><td>${escapeHtml(String(val))}</td></tr>`;
                         }
                     }
@@ -339,7 +408,7 @@ HTML_TEMPLATE = '''
                     isLoggedIn = true;
                     updateStatus('✅ Login berhasil!', 'success');
                     checkBtn.disabled = false;
-                    addLog('✅ Login sukses! CSRF token didapat.');
+                    addLog('✅ Login sukses!');
                 } else {
                     updateStatus('❌ Login gagal', 'error');
                     addLog(`❌ Gagal: ${data.message}`, true);
@@ -422,6 +491,6 @@ if __name__ == '__main__':
     print("="*50)
     print("🔍 POM BPJS - Cek KPJ")
     print(f"📱 Buka: http://localhost:{port}")
-    print("📌 Alur: Token URL → Step3 → Cek KPJ")
+    print("📌 Alur: Token URL → Step3 → Cek KPJ → Ambil data dari input-tk-nik-step1")
     print("="*50)
     app.run(debug=False, host='0.0.0.0', port=port)
